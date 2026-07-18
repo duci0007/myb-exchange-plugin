@@ -13,7 +13,7 @@
 cd Yunzai
 
 # 克隆仓库到 plugins 目录
-git clone https://github.com/your-name/myb-exchange-plugin.git ./plugins/myb-exchange-plugin
+git clone https://github.com/duci0007/myb-exchange-plugin.git ./plugins/myb-exchange-plugin
 ```
 
 **无需额外安装依赖**，所需 npm 包（`lodash`、`yaml`、`md5`、`node-fetch`、`oicq`）均由 Yunzai 主项目提供。
