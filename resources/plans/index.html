@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="img-src 'self' https: data:;">
+  <title>我的兑换计划</title>
+  <link rel="stylesheet" type="text/css" href="{{_res_path}}/plans/index.css"/>
+</head>
+<body>
+  <div class="container" id="container">
+    <div class="head-box">
+      <div class="title">📋 我的兑换计划</div>
+      <div class="label">共 {{total}} 个计划 · {{accountCount}} 个账号</div>
+    </div>
+
+    {{each groups group groupIdx}}
+    <div class="account-group">
+      <div class="account-title">
+        <span class="account-label">{{group.accountLabel}}</span>
+        <span class="account-count">{{group.plans.length}} 个计划</span>
+      </div>
+      <div class="plan-list">
+        {{each group.plans plan planIdx}}
+        <div class="plan-card {{plan.status}}">
+          <div class="plan-index">{{plan.globalIndex}}</div>
+          <div class="plan-icon">
+            {{if plan.status === 'success'}}✅
+            {{else if plan.status === 'failed'}}❌
+            {{else}}⏳{{/if}}
+          </div>
+          <div class="plan-info">
+            <div class="plan-name">{{plan.goodsName}}</div>
+            <div class="plan-details">
+              <span class="price">💰 {{plan.price}} 米游币</span>
+              <span class="time">⏰ {{plan.timeText}}</span>
+            </div>
+            {{if plan.gameUid}}
+            <div class="plan-uid">🎮 UID：{{plan.gameUid}}</div>
+            {{/if}}
+            {{if plan.addressText}}
+            <div class="plan-addr">📍 {{plan.addressText}}</div>
+            {{/if}}
+            {{if plan.result && plan.result.message}}
+            <div class="plan-result">📝 {{plan.result.message}}</div>
+            {{/if}}
+            <div class="plan-id">ID: {{plan.goodsId}}</div>
+          </div>
+          <div class="plan-status">
+            {{if plan.status === 'success'}}兑换成功
+            {{else if plan.status === 'failed'}}兑换失败
+            {{else}}待兑换{{/if}}
+          </div>
+        </div>
+        {{/each}}
+      </div>
+    </div>
+    {{/each}}
+
+    <div class="footer">
+      💡 使用 #兑换计划删除+序号 可删除对应计划
+    </div>
+    <div class="copyright">Created By myb-exchange-plugin</div>
+  </div>
+</body>
+</html>

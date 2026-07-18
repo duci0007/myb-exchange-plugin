@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+package-lock.json
+yarn.lock
+
+# 日志
+*.log
+logs/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 用户数据（隐私，禁止上传）
+data/
+config/config.yaml
+
+# 临时文件
+temp/
+tmp/
+*.tmp
+*.bak

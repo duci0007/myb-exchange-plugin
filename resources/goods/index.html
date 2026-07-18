@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="img-src 'self' https: data:;">
+  <title>米游币商品</title>
+  <link rel="stylesheet" type="text/css" href="{{_res_path}}/goods/index.css"/>
+</head>
+<body>
+  <div class="container" id="container">
+    <div class="head-box">
+      <div class="title">{{catName}} 商品列表</div>
+      <div class="label">共 {{goods.length}} 个限时商品</div>
+    </div>
+
+    <div class="goods-grid">
+      {{each goods g idx}}
+      <div class="goods-card">
+        <div class="goods-index">{{idx + 1}}</div>
+        <div class="goods-img-box">
+          {{if g.icon}}
+          <img class="goods-img" src="{{g.icon}}" onerror="this.style.display='none'"/>
+          {{else}}
+          <div class="goods-img-placeholder">无图</div>
+          {{/if}}
+        </div>
+        <div class="goods-info">
+          <div class="goods-name">{{g.goods_name || '未命名'}}</div>
+          <div class="goods-id">ID: {{g.goods_id}}</div>
+          <div class="goods-price">💰 {{g.price}} 米游币</div>
+          <div class="goods-time">⏰ {{g.timeText}}</div>
+        </div>
+      </div>
+      {{/each}}
+    </div>
+
+    <div class="copyright">Created By myb-exchange-plugin</div>
+  </div>
+</body>
+</html>

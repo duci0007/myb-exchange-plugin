@@ -1,0 +1,17 @@
+plugin:
+  priority: 100
+  logLevel: info
+
+exchange:
+  threadCount: 3
+  retryCount: 2
+  timeout: 15
+  preExchangeTime: 100
+  sleepTime: 100
+
+healthCheck:
+  enable: true
+  intervalDays: 3
+  hour: 4
+  game: hk4e
+  notifyOnRecover: true

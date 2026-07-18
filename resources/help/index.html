@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>米游币兑换插件</title>
+  <link rel="stylesheet" type="text/css" href="{{_res_path}}/help/index.css"/>
+</head>
+<body>
+  <div class="container" id="container">
+    <div class="head-box">
+      <div class="title">米游币兑换插件</div>
+      <div class="label">myb-exchange-plugin</div>
+    </div>
+
+    <div class="cont-box">
+      <div class="help-group">🎯 命令列表</div>
+      <div class="help-table">
+        <div class="tr">
+          {{each helpList cmd idx}}
+          <div class="td">
+            <strong class="cmd-title">{{cmd.title}}</strong>
+            <span class="cmd-desc">{{cmd.desc}}</span>
+          </div>
+          {{if idx % 2 === 1 && idx < helpList.length - 1}}
+        </div>
+        <div class="tr">
+          {{/if}}
+          {{/each}}
+        </div>
+      </div>
+    </div>
+
+    <div class="cont-box">
+      <div class="help-group">📋 商品类别</div>
+      <div class="help-table">
+        <div class="tr">
+          {{each catList cat idx}}
+          <div class="td">
+            <strong class="cmd-title">{{cat.name}}</strong>
+            <span class="cmd-desc">{{cat.key}}</span>
+          </div>
+          {{if idx % 2 === 1 && idx < catList.length - 1}}
+        </div>
+        <div class="tr">
+          {{/if}}
+          {{/each}}
+        </div>
+      </div>
+    </div>
+
+    <div class="copyright">Created By myb-exchange-plugin</div>
+  </div>
+</body>
+</html>
