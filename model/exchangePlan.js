@@ -55,11 +55,12 @@ class ExchangePlanManager {
     return null
   }
 
-  removeByGoodsId (userId, goodsId) {
+  removeByGoodsId (userId, goodsId, ltuid = '') {
     const idx = this.plans.findIndex(p =>
       p.goodsId === String(goodsId) &&
       p.userId === String(userId) &&
-      p.status === 'pending'
+      p.status === 'pending' &&
+      (ltuid ? p.ltuid === String(ltuid) : true)
     )
     if (idx > -1) {
       const plan = this.plans[idx]

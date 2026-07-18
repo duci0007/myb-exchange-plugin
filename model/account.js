@@ -1,4 +1,3 @@
-import Cfg from './Cfg.js'
 import cfg from '../../../lib/config/config.js'
 import fs from 'fs'
 import path from 'path'

@@ -2,6 +2,7 @@ import Cfg from './Cfg.js'
 import ExchangePlanManager from './exchangePlan.js'
 import MysApi from './mys/mysApi.js'
 import Account from './account.js'
+import { mapGameBizToKey } from './gameMap.js'
 
 class ExchangeScheduler {
   constructor () {
@@ -66,7 +67,7 @@ class ExchangeScheduler {
     // 获取账号凭据：优先用游戏 UID 定位对应账号
     let account
     if (plan.gameUid) {
-      const game = this._mapGameBizToKey(plan.gameBiz)
+      const game = mapGameBizToKey(plan.gameBiz) || 'gs'
       account = await Account.getByUid(plan.userId, plan.gameUid, game)
     }
     if (!account) {
@@ -126,6 +127,7 @@ class ExchangeScheduler {
 
   async _doExchange (plan, account, threadIndex, retryCount) {
     const mysApi = new MysApi(account.cookie, plan.deviceId, plan.deviceFp)
+    let lastResult = null
 
     for (let retry = 0; retry <= retryCount; retry++) {
       try {
@@ -151,21 +153,7 @@ class ExchangeScheduler {
           }
         }
 
-        if ([-100, 1034, 5003, 10035, 10041].includes(res.retcode) ||
-            res.message?.includes('验证') || res.message?.includes('风险')) {
-          logger.warn(`[兑换插件][线程${threadIndex}]触发验证码（retcode=${res.retcode}），本插件不处理`)
-          return {
-            success: false,
-            retcode: res.retcode,
-            message: `触发验证码: ${res.message || ''}（请确保 ji-plugin 已开启全局验证码处理）`,
-            data: res.data,
-            thread: threadIndex,
-            elapsed
-          }
-        }
-
-        logger.warn(`[兑换插件][线程${threadIndex}]兑换失败: retcode=${res.retcode}, msg=${res.message}, 耗时 ${elapsed}ms`)
-        return {
+        lastResult = {
           success: false,
           retcode: res.retcode,
           message: res.message || '兑换失败',
@@ -173,22 +161,34 @@ class ExchangeScheduler {
           thread: threadIndex,
           elapsed
         }
-      } catch (e) {
-        logger.error(`[兑换插件][线程${threadIndex}]兑换异常: ${e.message}`)
+
+        if ([-100, 1034, 5003, 10035, 10041].includes(res.retcode) ||
+            res.message?.includes('验证') || res.message?.includes('风险')) {
+          logger.warn(`[兑换插件][线程${threadIndex}]触发验证码（retcode=${res.retcode}），本插件不处理`)
+          lastResult.message = `触发验证码: ${res.message || ''}（请确保 ji-plugin 已开启全局验证码处理）`
+          return lastResult
+        }
+
+        logger.warn(`[兑换插件][线程${threadIndex}]兑换失败: retcode=${res.retcode}, msg=${res.message}, 耗时 ${elapsed}ms, 第${retry + 1}次`)
+
         if (retry < retryCount) {
           await new Promise(r => setTimeout(r, 500))
-          continue
         }
-        return {
+      } catch (e) {
+        logger.error(`[兑换插件][线程${threadIndex}]兑换异常: ${e.message}, 第${retry + 1}次`)
+        lastResult = {
           success: false,
           retcode: -1,
           message: e.message,
           thread: threadIndex
         }
+        if (retry < retryCount) {
+          await new Promise(r => setTimeout(r, 500))
+        }
       }
     }
 
-    return { success: false, retcode: -2, message: '重试次数耗尽', thread: threadIndex }
+    return lastResult || { success: false, retcode: -2, message: '重试次数耗尽', thread: threadIndex }
   }
 
   async _notifyResult (plan, success, result, allResults) {
@@ -221,19 +221,6 @@ class ExchangeScheduler {
     }
   }
 
-  /** 将 game_biz 映射为 NoteUser 使用的 game key */
-  _mapGameBizToKey (gameBiz) {
-    if (!gameBiz) return 'gs'
-    const map = {
-      hk4e_cn: 'gs', hk4e: 'gs',
-      hkrpg_cn: 'sr', hkrpg: 'sr',
-      bh3_cn: 'bh3', bh3: 'bh3',
-      bh2_cn: 'bh2', bh2: 'bh2',
-      nxx_cn: 'nxx', nxx: 'nxx',
-      nap_cn: 'nap', nap: 'nap'
-    }
-    return map[gameBiz] || 'gs'
-  }
 }
 
 export default new ExchangeScheduler()
