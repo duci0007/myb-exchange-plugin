@@ -1,5 +1,4 @@
 import fetch from 'node-fetch'
-import _ from 'lodash'
 import mysTool from './mysTool.js'
 import Cfg from '../Cfg.js'
 
@@ -47,6 +46,9 @@ export default class MysApi {
     })
 
     try {
+      const timeoutMs = Cfg.get('exchange.timeout', 15) * 1000
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
       const res = await fetch(mysTool.api.deviceFp, {
         method: 'post',
         headers: {
@@ -56,8 +58,9 @@ export default class MysApi {
           'User-Agent': `Mozilla/5.0 (iPhone; CPU iPhone OS 14_0_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/${mysTool.APP_VERSION}`
         },
         body,
-        timeout: Cfg.get('exchange.timeout', 15) * 1000
+        signal: controller.signal
       })
+      clearTimeout(timer)
       const data = await res.json()
       if (data.retcode === 0 && data.data?.device_fp) {
         this.deviceFp = data.data.device_fp
@@ -65,6 +68,7 @@ export default class MysApi {
       }
       return ''
     } catch (e) {
+      clearTimeout(timer)
       logger.error(`[兑换插件]获取设备指纹失败: ${e.message}`)
       return ''
     }
@@ -127,11 +131,15 @@ export default class MysApi {
   }
 
   async request (url, options = {}) {
+    const timeoutMs = Cfg.get('exchange.timeout', 15) * 1000
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const res = await fetch(url, {
         ...options,
-        timeout: Cfg.get('exchange.timeout', 15) * 1000
+        signal: controller.signal
       })
+      clearTimeout(timer)
       const text = await res.text()
       let data
       try {
@@ -145,6 +153,7 @@ export default class MysApi {
       }
       return data
     } catch (e) {
+      clearTimeout(timer)
       logger.error(`[兑换插件]请求失败 ${url}: ${e.message}`)
       return { retcode: -1, message: e.message, error: true }
     }

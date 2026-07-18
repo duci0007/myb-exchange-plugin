@@ -69,6 +69,7 @@ class Cfg {
       const data = fs.readFileSync(file, 'utf8')
       return ext === 'yaml' ? YAML.parse(data) : JSON.parse(data)
     } catch (e) {
+      logger.error(`[兑换插件]读取数据 ${name} 失败: ${e.message}`)
       return {}
     }
   }
