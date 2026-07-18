@@ -59,7 +59,7 @@ export class Goods extends plugin {
       return false
     }
 
-    const timeGoods = allGoods.filter(g => g.unlimit === false && g.next_time)
+    const timeGoods = allGoods.filter(g => (g.unlimit === false || g.unlimit === 0) && g.next_time)
     const displayGoods = (timeGoods.length ? timeGoods : allGoods.slice(0, 20)).slice(0, 20)
 
     // 预处理时间字段，避免在模板中调用方法
@@ -90,7 +90,7 @@ export class Goods extends plugin {
   }
 
   _buildTextList (catName, goods) {
-    let msgText = `📦 ${catName} 商品列表（共 ${goods.length} 个限时商品）\n\n`
+    let msgText = `📦 ${catName} 商品列表（共 ${goods.length} 个）\n\n`
     for (let i = 0; i < goods.length; i++) {
       const g = goods[i]
       msgText += `${i + 1}. 【${g.goods_id}】${g.goods_name}\n`

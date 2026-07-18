@@ -1,5 +1,4 @@
 import Cfg from './Cfg.js'
-import _ from 'lodash'
 
 const DATA_FILE = 'exchangePlans.json'
 
@@ -93,6 +92,10 @@ class ExchangePlanManager {
       p.ltuid === String(ltuid) &&
       p.status === 'pending'
     )
+  }
+
+  getPlan (planId) {
+    return this.plans.find(p => p.id === planId) || null
   }
 
   updatePlan (planId, updates) {

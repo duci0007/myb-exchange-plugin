@@ -64,14 +64,25 @@ class ExchangeScheduler {
   async executePlan (plan) {
     logger.mark(`[兑换插件]开始执行兑换计划 ${plan.id} (${plan.goodsName})`)
 
+    // 计划可能已被用户删除，执行前再次确认
+    if (!ExchangePlanManager.getPlan(plan.id)) {
+      logger.warn(`[兑换插件]计划 ${plan.id} 已被删除，取消执行`)
+      this.timers.delete(plan.id)
+      return { success: false }
+    }
+
     // 获取账号凭据：优先用游戏 UID 定位对应账号
     let account
+    let accountSource = ''
     if (plan.gameUid) {
       const game = mapGameBizToKey(plan.gameBiz) || 'gs'
       account = await Account.getByUid(plan.userId, plan.gameUid, game)
+      accountSource = `UID ${plan.gameUid} (${game})`
     }
-    if (!account) {
+    // 实物商品或未记录 UID：使用当前默认账号（同一用户各游戏 CK 通常互通）
+    if (!account && !plan.gameUid) {
       account = await Account.get(plan.userId)
+      accountSource = '默认账号'
     }
 
     if (!account?.cookie) {
@@ -85,6 +96,8 @@ class ExchangeScheduler {
       await this._notifyResult(plan, false, { message: '未找到可用凭据' }, [])
       return { success: false }
     }
+
+    logger.mark(`[兑换插件]计划 ${plan.id} 使用账号 ${accountSource || account.ltuid} 进行兑换`)
 
     const threadCount = Cfg.get('exchange.threadCount', 3)
     const sleepTime = Cfg.get('exchange.sleepTime', 100)

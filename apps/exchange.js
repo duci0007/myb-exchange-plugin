@@ -95,7 +95,7 @@ export class Exchange extends plugin {
       return false
     }
 
-    const timeGoods = allGoods.filter(g => g.unlimit === false && g.next_time)
+    const timeGoods = allGoods.filter(g => (g.unlimit === false || g.unlimit === 0) && g.next_time)
     const displayGoods = (timeGoods.length ? timeGoods : allGoods.slice(0, 20)).slice(0, 20)
 
     if (index > displayGoods.length) {
@@ -127,142 +127,149 @@ export class Exchange extends plugin {
 
     await this.reply('⏳ 正在获取商品详情...')
 
-    const mysApi = new MysApi(account.cookie, account.device)
-    const detailRes = await mysApi.getGoodDetail(goodsId)
+    try {
+      const mysApi = new MysApi(account.cookie, account.device)
+      const detailRes = await mysApi.getGoodDetail(goodsId)
 
-    if (detailRes.retcode !== 0 || !detailRes.data) {
-      await this.reply(`❌ 获取商品详情失败：${detailRes.message || '未知错误'}`)
-      return false
-    }
-
-    const good = detailRes.data
-    if (good.unlimit === true) {
-      await this.reply('❌ 该商品不是限时可兑换商品')
-      return false
-    }
-
-    const isVirtual = good.type === 1
-    const exchangeTime = Number(good.next_time) || Number(good.start) || 0
-
-    if (exchangeTime * 1000 < Date.now()) {
-      await this.reply('❌ 该商品已过兑换时间')
-      return false
-    }
-
-    const planData = {
-      goodsId: String(goodsId),
-      goodsName: good.goods_name || '未命名',
-      price: good.price || 0,
-      exchangeTime: exchangeTime,
-      isVirtual: isVirtual,
-      gameBiz: good.game_biz || '',
-      deviceId: account.device || mysTool.getDeviceGuid(),
-      deviceFp: ''
-    }
-
-    let useAccount = account
-
-    if (isVirtual) {
-      // 虚拟商品：自动用当前游戏的主 UID；用户也可在指令中带 UID 指定
-      const gameKey = mapGameBizToKey(good.game_biz || '')
-
-      let useUid = ''
-
-      if (specifiedUid) {
-        // 校验用户指定的 UID 是否在该用户绑定列表里
-        const verifyAccount = await Account.getByUid(userId, specifiedUid, gameKey)
-        if (!verifyAccount?.cookie) {
-          await this.reply(`❌ 未找到 UID ${specifiedUid} 对应的账号 Cookie\n请确认该 UID 已通过 #绑定uid 绑定`)
-          return false
-        }
-        useUid = String(specifiedUid)
-        useAccount = verifyAccount
-      } else {
-        // 直接读取本体绑定的当前游戏主 UID
-        const gameAccount = await Account.get(userId, gameKey || 'gs')
-        if (!gameAccount?.cookie) {
-          await this.reply(`❌ 未找到当前${gameLabel(gameKey)}账号\n请先使用 #绑定uid 切换账号，或在指令中带上 UID`)
-          return false
-        }
-        if (!gameAccount.uid) {
-          await this.reply('❌ 未找到当前选中 UID\n请先使用 #绑定uid 切换账号')
-          return false
-        }
-        useUid = String(gameAccount.uid)
-        useAccount = gameAccount
-      }
-
-      planData.gameUid = useUid
-      planData.region = this._guessRegion(useUid)
-      planData.ltuid = useAccount.ltuid
-      planData.deviceId = useAccount.device || planData.deviceId
-
-      // 重新构造 MysApi，用对应账号的 CK 取设备指纹
-      const roleMysApi = new MysApi(useAccount.cookie, useAccount.device)
-      const fp = await roleMysApi.getFp()
-      if (fp) planData.deviceFp = fp
-    } else {
-      // 实物商品：使用收货地址
-      const addr = await this._getAddress()
-      if (!addr) {
-        await this.reply('⚠️ 请先设置收货地址\n发送：#米游币地址')
+      if (detailRes.retcode !== 0 || !detailRes.data) {
+        await this.reply(`❌ 获取商品详情失败：${detailRes.message || '未知错误'}`)
         return false
       }
-      planData.addressId = addr.id
-      planData.addressText = addr.addr_ext
-      planData.ltuid = account.ltuid
 
-      const fp = await mysApi.getFp()
-      if (fp) planData.deviceFp = fp
-    }
+      const good = detailRes.data
+      if (good.unlimit === true || good.unlimit === 1) {
+        await this.reply('❌ 该商品不是限时可兑换商品')
+        return false
+      }
 
-    // 重复检查：同一账号同一商品不允许重复添加 pending 计划
-    if (ExchangePlanManager.hasPendingByGoodsId(userId, goodsId, useAccount.ltuid)) {
-      await this.reply(
-        `❌ 该账号已添加过该商品的兑换计划，不能重复添加\n\n` +
-        `📦 商品：${good.goods_name || '未命名'}\n` +
-        `💰 价格：${good.price} 米游币\n` +
-        `⏰ 开兑时间：${this._formatTime(exchangeTime)}`
-      )
-      return false
-    }
+      const isVirtual = Number(good.type) === 1
+      const exchangeTime = Number(good.next_time) || Number(good.start) || 0
 
-    // 余额检查：查询该账号当前米游币，扣除该账号所有 pending 计划占用
-    const balanceMysApi = new MysApi(useAccount.cookie, useAccount.device)
-    const stokenData = await Account.getStokenByLtuid(userId, useAccount.ltuid)
-    const balanceRes = await balanceMysApi.getMybBalance(stokenData)
-    if (balanceRes.retcode === 0 && balanceRes.data) {
-      const currentBalance = balanceRes.data.total_points ?? 0
-      const pendingPlans = ExchangePlanManager.listPendingByLtuid(useAccount.ltuid)
-      const occupied = pendingPlans.reduce((sum, p) => sum + (Number(p.price) || 0), 0)
-      const available = currentBalance - occupied
-      if (good.price > available) {
+      if (exchangeTime * 1000 < Date.now()) {
+        await this.reply('❌ 该商品已过兑换时间')
+        return false
+      }
+
+      // 先确定使用哪个账号，再做重复/余额检查，避免不必要的 getFp 请求
+      let useAccount = account
+      let useUid = ''
+      let addr = null
+
+      if (isVirtual) {
+        // 虚拟商品：自动用当前游戏的主 UID；用户也可在指令中带 UID 指定
+        const gameKey = mapGameBizToKey(good.game_biz || '')
+
+        if (specifiedUid) {
+          // 校验用户指定的 UID 是否在该用户绑定列表里
+          const verifyAccount = await Account.getByUid(userId, specifiedUid, gameKey)
+          if (!verifyAccount?.cookie) {
+            await this.reply(`❌ 未找到 UID ${specifiedUid} 对应的账号 Cookie\n请确认该 UID 已通过 #绑定uid 绑定`)
+            return false
+          }
+          useUid = String(specifiedUid)
+          useAccount = verifyAccount
+        } else {
+          // 直接读取本体绑定的当前游戏主 UID
+          const gameAccount = await Account.get(userId, gameKey || 'gs')
+          if (!gameAccount?.cookie) {
+            await this.reply(`❌ 未找到当前${gameLabel(gameKey)}账号\n请先使用 #绑定uid 切换账号，或在指令中带上 UID`)
+            return false
+          }
+          if (!gameAccount.uid) {
+            await this.reply('❌ 未找到当前选中 UID\n请先使用 #绑定uid 切换账号')
+            return false
+          }
+          useUid = String(gameAccount.uid)
+          useAccount = gameAccount
+        }
+      } else {
+        // 实物商品：使用收货地址
+        addr = await this._getAddress()
+        if (!addr) {
+          await this.reply('⚠️ 请先设置收货地址\n发送：#米游币地址')
+          return false
+        }
+      }
+
+      // 重复检查：同一账号同一商品不允许重复添加 pending 计划
+      if (ExchangePlanManager.hasPendingByGoodsId(userId, goodsId, useAccount.ltuid)) {
         await this.reply(
-          `❌ 当前米游币数量不足以兑换该商品，添加失败\n\n` +
-          `💰 当前余额：${currentBalance}\n` +
-          `📌 已占用：${occupied}（${pendingPlans.length} 个待兑换计划）\n` +
-          `✨ 可用：${available}\n` +
-          `📦 商品需要：${good.price}`
+          `❌ 该账号已添加过该商品的兑换计划，不能重复添加\n\n` +
+          `📦 商品：${good.goods_name || '未命名'}\n` +
+          `💰 价格：${good.price} 米游币\n` +
+          `⏰ 开兑时间：${this._formatTime(exchangeTime)}`
         )
         return false
       }
-    } else {
-      logger.warn(`[兑换插件]查询余额失败，跳过余额检查: retcode=${balanceRes.retcode}, msg=${balanceRes.message}`)
+
+      // 余额检查：查询该账号当前米游币，扣除该账号所有 pending 计划占用
+      const balanceMysApi = new MysApi(useAccount.cookie, useAccount.device)
+      const stokenData = await Account.getStokenByLtuid(userId, useAccount.ltuid)
+      const balanceRes = await balanceMysApi.getMybBalance(stokenData)
+      if (balanceRes.retcode === 0 && balanceRes.data) {
+        const currentBalance = balanceRes.data.total_points ?? 0
+        const pendingPlans = ExchangePlanManager.listPendingByLtuid(useAccount.ltuid)
+        const occupied = pendingPlans.reduce((sum, p) => sum + (Number(p.price) || 0), 0)
+        const available = currentBalance - occupied
+        if (good.price > available) {
+          await this.reply(
+            `❌ 当前米游币数量不足以兑换该商品，添加失败\n\n` +
+            `💰 当前余额：${currentBalance}\n` +
+            `📌 已占用：${occupied}（${pendingPlans.length} 个待兑换计划）\n` +
+            `✨ 可用：${available}\n` +
+            `📦 商品需要：${good.price}`
+          )
+          return false
+        }
+      } else {
+        logger.warn(`[兑换插件]查询余额失败，跳过余额检查: retcode=${balanceRes.retcode}, msg=${balanceRes.message}`)
+      }
+
+      const planData = {
+        goodsId: String(goodsId),
+        goodsName: good.goods_name || '未命名',
+        price: good.price || 0,
+        exchangeTime: exchangeTime,
+        isVirtual: isVirtual,
+        gameBiz: good.game_biz || '',
+        ltuid: useAccount.ltuid,
+        deviceId: useAccount.device || account.device || mysTool.getDeviceGuid(),
+        deviceFp: ''
+      }
+
+      if (isVirtual) {
+        planData.gameUid = useUid
+        planData.region = this._guessRegion(useUid)
+      } else {
+        planData.addressId = addr.id
+        planData.addressText = addr.addr_ext
+      }
+
+      // 获取设备指纹
+      const fpMysApi = new MysApi(useAccount.cookie, planData.deviceId)
+      const fp = await fpMysApi.getFp()
+      if (fp) planData.deviceFp = fp
+
+      const plan = ExchangePlanManager.addPlan(userId, planData)
+      const scheduled = Scheduler.schedulePlan(plan)
+
+      let replyMsg =
+        `🎉 兑换计划已添加！\n` +
+        `📦 商品：${plan.goodsName}\n` +
+        `💰 价格：${plan.price} 米游币\n` +
+        `⏰ 开兑时间：${this._formatTime(plan.exchangeTime)}\n`
+      if (planData.gameUid) replyMsg += `🎮 接收 UID：${planData.gameUid}\n`
+      if (planData.addressText) replyMsg += `📍 收货地址：${planData.addressText}\n`
+      replyMsg += scheduled
+        ? '\n💡 将在开兑前自动开始抢兑'
+        : '\n⚠️ 该商品已过开兑时间，不会自动抢兑'
+      await this.reply(replyMsg, true)
+      return false
+    } catch (e) {
+      logger.error(`[兑换插件]添加兑换计划异常: ${e.message}`)
+      await this.reply(`❌ 添加兑换计划时发生错误：${e.message}\n请检查账号状态或稍后再试`)
+      return false
     }
-
-    const plan = ExchangePlanManager.addPlan(userId, planData)
-    Scheduler.schedulePlan(plan)
-
-    let replyMsg =
-      `🎉 兑换计划已添加！\n` +
-      `📦 商品：${plan.goodsName}\n` +
-      `💰 价格：${plan.price} 米游币\n` +
-      `⏰ 开兑时间：${this._formatTime(plan.exchangeTime)}\n`
-    if (planData.gameUid) replyMsg += `🎮 接收 UID：${planData.gameUid}\n`
-    if (planData.addressText) replyMsg += `📍 收货地址：${planData.addressText}\n`
-    replyMsg += `\n💡 将在开兑前自动开始抢兑`
-    await this.reply(replyMsg, true)
-    return false
   }
 
   _guessRegion (uid) {
@@ -274,13 +281,28 @@ export class Exchange extends plugin {
   }
 
   async _removePlan (goodsId) {
-    const plan = ExchangePlanManager.removeByGoodsId(this._userId, goodsId)
-    if (plan) {
-      Scheduler.cancelPlan(plan.id)
-      await this.reply(`🗑️ 已删除兑换计划：${plan.goodsName}`)
-    } else {
+    const userId = this._userId
+    const pending = ExchangePlanManager.listUserPlans(userId).filter(p =>
+      p.goodsId === String(goodsId) && p.status === 'pending'
+    )
+
+    if (!pending.length) {
       await this.reply(`❌ 未找到商品ID为 ${goodsId} 的兑换计划`)
+      return false
     }
+
+    if (pending.length > 1) {
+      await this.reply(
+        `⚠️ 该商品存在 ${pending.length} 个待兑换计划（分布在不同账号），\n` +
+        `请使用 #兑换计划 查看序号后，发送 #兑换计划删除<序号> 进行删除`
+      )
+      return false
+    }
+
+    const plan = pending[0]
+    Scheduler.cancelPlan(plan.id)
+    ExchangePlanManager.removePlan(userId, plan.id)
+    await this.reply(`🗑️ 已删除兑换计划：${plan.goodsName}`)
     return false
   }
 
@@ -300,8 +322,12 @@ export class Exchange extends plugin {
       groupsMap[key].push(plan)
     }
 
-    const sortedKeys = ltuidOrder.filter(k => groupsMap[k])
+    let sortedKeys = ltuidOrder.filter(k => groupsMap[k])
     if (groupsMap['unknown']) sortedKeys.push('unknown')
+    // 已解绑或 listAccounts 异常时，确保计划仍显示出来
+    for (const k of Object.keys(groupsMap)) {
+      if (!sortedKeys.includes(k)) sortedKeys.push(k)
+    }
 
     const groups = []
     const flatList = []

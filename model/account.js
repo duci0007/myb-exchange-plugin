@@ -1,6 +1,6 @@
 import cfg from '../../../lib/config/config.js'
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import YAML from 'yaml'
 
 /**
@@ -106,7 +106,7 @@ class Account {
     const noteUser = await this._getNoteUser(userId)
     if (!noteUser || !noteUser.hasCk) return []
 
-    const games = ['gs', 'sr', 'zzz', 'bh3', 'nxx']
+    const games = ['gs', 'sr', 'zzz', 'bh3', 'bh2', 'nxx']
     const result = []
 
     for (const game of games) {
