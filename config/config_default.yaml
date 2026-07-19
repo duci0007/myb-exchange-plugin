@@ -5,6 +5,7 @@ plugin:
 exchange:
   threadCount: 3
   retryCount: 2
+  retryInterval: 200
   timeout: 15
   preExchangeTime: 100
   sleepTime: 100

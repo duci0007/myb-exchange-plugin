@@ -70,19 +70,24 @@ class ExchangeScheduler {
       return { success: false }
     }
 
-    // 获取账号凭据：优先用游戏 UID 定位对应账号
-    let account
-    let accountSource = ''
-    if (plan.gameUid) {
-      const game = mapGameBizToKey(plan.gameBiz) || 'gs'
-      account = await Account.getByUid(plan.userId, plan.gameUid, game)
-      accountSource = `UID ${plan.gameUid} (${game})`
-    }
-    // 实物商品或未记录 UID：使用当前默认账号（同一用户各游戏 CK 通常互通）
-    if (!account && !plan.gameUid) {
-      account = await Account.get(plan.userId)
-      accountSource = '默认账号'
-    }
+    // 并行：账号凭据查询 + HTTP 连接预热（DNS/TLS 握手）
+    const accountPromise = (async () => {
+      if (plan.gameUid) {
+        const game = mapGameBizToKey(plan.gameBiz) || 'gs'
+        const acc = await Account.getByUid(plan.userId, plan.gameUid, game)
+        if (acc) return { account: acc, source: `UID ${plan.gameUid} (${game})` }
+      }
+      if (!plan.gameUid) {
+        const acc = await Account.get(plan.userId)
+        if (acc) return { account: acc, source: '默认账号' }
+      }
+      return { account: null, source: '' }
+    })()
+
+    const warmupMysApi = new MysApi('', plan.deviceId, plan.deviceFp)
+    const warmupPromise = warmupMysApi.warmup()
+
+    const { account, source: accountSource } = await accountPromise
 
     if (!account?.cookie) {
       logger.error(`[兑换插件]用户 ${plan.userId} 无可用凭据，跳过兑换`)
@@ -96,15 +101,21 @@ class ExchangeScheduler {
       return { success: false }
     }
 
+    // 等待预热完成（通常已在账号查询期间完成）
+    await warmupPromise
+
     logger.mark(`[兑换插件]计划 ${plan.id} 使用账号 ${accountSource || account.ltuid} 进行兑换`)
 
     const threadCount = Cfg.get('exchange.threadCount', 3)
     const sleepTime = Cfg.get('exchange.sleepTime', 100)
     const retryCount = Cfg.get('exchange.retryCount', 2)
 
+    // 所有线程共享同一个 MysApi 实例（Cookie/DeviceId/FP 一致）
+    const sharedMysApi = new MysApi(account.cookie, plan.deviceId, plan.deviceFp)
+
     const tasks = []
     for (let i = 0; i < threadCount; i++) {
-      tasks.push(this._doExchange(plan, account, i, retryCount))
+      tasks.push(this._doExchange(plan, sharedMysApi, i, retryCount))
       if (i < threadCount - 1) {
         await new Promise(r => setTimeout(r, sleepTime))
       }
@@ -137,8 +148,8 @@ class ExchangeScheduler {
     return { success, result, results }
   }
 
-  async _doExchange (plan, account, threadIndex, retryCount) {
-    const mysApi = new MysApi(account.cookie, plan.deviceId, plan.deviceFp)
+  async _doExchange (plan, mysApi, threadIndex, retryCount) {
+    const retryInterval = Cfg.get('exchange.retryInterval', 200)
     let lastResult = null
 
     for (let retry = 0; retry <= retryCount; retry++) {
@@ -184,7 +195,7 @@ class ExchangeScheduler {
         logger.warn(`[兑换插件][线程${threadIndex}]兑换失败: retcode=${res.retcode}, msg=${res.message}, 耗时 ${elapsed}ms, 第${retry + 1}次`)
 
         if (retry < retryCount) {
-          await new Promise(r => setTimeout(r, 500))
+          await new Promise(r => setTimeout(r, retryInterval))
         }
       } catch (e) {
         logger.error(`[兑换插件][线程${threadIndex}]兑换异常: ${e.message}, 第${retry + 1}次`)
@@ -195,7 +206,7 @@ class ExchangeScheduler {
           thread: threadIndex
         }
         if (retry < retryCount) {
-          await new Promise(r => setTimeout(r, 500))
+          await new Promise(r => setTimeout(r, retryInterval))
         }
       }
     }

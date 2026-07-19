@@ -242,4 +242,22 @@ export default class MysApi {
     })
     return res
   }
+
+  /** 预热到兑换接口的 TCP/TLS 连接，减少首次请求耗时 */
+  async warmup () {
+    try {
+      const url = new URL(mysTool.goodsApi.exchange)
+      const dummyUrl = `https://${url.host}/`
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      await fetch(dummyUrl, {
+        method: 'HEAD',
+        signal: controller.signal,
+        headers: { 'Host': url.host }
+      }).catch(() => {})
+      clearTimeout(timer)
+    } catch (e) {
+      // 预热失败不影响后续流程
+    }
+  }
 }
