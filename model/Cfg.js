@@ -46,8 +46,13 @@ class Cfg {
       ? `${this.defSetPath}/config_default.yaml`
       : `${this.configPath}/${name}.yaml`
     const cacheKey = `${type}_${name}`
-    delete this.config[cacheKey]
-    fs.writeFileSync(file, YAML.stringify(data), 'utf8')
+    try {
+      fs.writeFileSync(file, YAML.stringify(data), 'utf8')
+      delete this.config[cacheKey]
+    } catch (e) {
+      logger.error(`[兑换插件]写入配置 ${name}.yaml 失败: ${e.message}`)
+      throw e
+    }
   }
 
   get (key, defVal = undefined) {
@@ -78,7 +83,12 @@ class Cfg {
     const file = `${this.dataPath}/${name}`
     const ext = name.split('.').pop()
     const content = ext === 'yaml' ? YAML.stringify(data) : JSON.stringify(data, null, 2)
-    fs.writeFileSync(file, content, 'utf8')
+    try {
+      fs.writeFileSync(file, content, 'utf8')
+    } catch (e) {
+      logger.error(`[兑换插件]写入数据 ${name} 失败: ${e.message}`)
+      throw e
+    }
   }
 }
 

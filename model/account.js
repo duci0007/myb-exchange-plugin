@@ -142,6 +142,7 @@ class Account {
         result.push({
           ltuid: String(ltuid),
           ck: mysUser.ck,
+          device: mysUser.device || '',
           uids: mysUser.uids || {}
         })
       }

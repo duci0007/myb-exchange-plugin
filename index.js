@@ -18,9 +18,9 @@ files.forEach((file) => {
 
 ret = await Promise.allSettled(ret)
 
-for (let i in files) {
+for (let i = 0; i < files.length; i++) {
   let name = files[i].replace('.js', '')
-  if (ret[i].status != 'fulfilled') {
+  if (ret[i].status !== 'fulfilled') {
     logger.error(`[兑换插件]载入插件错误：${name}`)
     logger.error(ret[i].reason)
     continue

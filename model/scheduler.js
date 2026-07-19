@@ -40,11 +40,29 @@ class ExchangeScheduler {
       clearTimeout(this.timers.get(plan.id))
     }
 
+    // Node.js setTimeout 最大安全延迟约 24.8 天（2^31 - 1 ms）
+    // 超过时分段重调度，避免立即触发的 bug
+    const MAX_TIMEOUT = 2147483647
+    const safeDelay = Math.min(delay, MAX_TIMEOUT)
+    const needsReschedule = delay > MAX_TIMEOUT
+
     const timer = setTimeout(() => {
-      this.executePlan(plan).catch(e => {
+      if (needsReschedule) {
+        // 还未到时间，重新调度
+        this.timers.delete(plan.id)
+        this.schedulePlan(plan)
+        return
+      }
+      // 执行时使用最新 plan 数据，避免使用调度时的闭包快照
+      const freshPlan = ExchangePlanManager.getPlan(plan.id)
+      if (!freshPlan) {
+        this.timers.delete(plan.id)
+        return
+      }
+      this.executePlan(freshPlan).catch(e => {
         logger.error(`[兑换插件]执行计划 ${plan.id} 异常: ${e.message}`)
       })
-    }, delay)
+    }, safeDelay)
 
     this.timers.set(plan.id, timer)
     logger.debug(`[兑换插件]已调度计划 ${plan.id} (${plan.goodsName})，${(delay / 1000).toFixed(0)} 秒后开始`)
