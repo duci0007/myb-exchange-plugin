@@ -189,7 +189,7 @@ export default class MysApi {
   async getMybBalance (stokenData = null) {
     const url = mysTool.goodsApi.balance
     let cookie = this.cookie
-    let dsSalt = 'k2'
+    const dsSalt = 'k2'
 
     if (stokenData?.stoken && stokenData?.stuid) {
       const parts = []

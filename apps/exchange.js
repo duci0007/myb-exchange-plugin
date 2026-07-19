@@ -85,8 +85,8 @@ export class Exchange extends plugin {
       const list = res.data.list
       if (!list.length) break
       allGoods.push(...list)
-      const total = res.data.total || 0
-      if (allGoods.length >= total) break
+      const total = res.data.total
+      if (total && allGoods.length >= total) break
       page++
     }
 

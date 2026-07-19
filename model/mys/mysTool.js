@@ -51,15 +51,6 @@ function getDeviceGuid () {
   return (S4() + S4() + '-' + S4() + '-' + S4() + '-' + S4() + '-' + S4() + S4() + S4())
 }
 
-function getDs (saltType = 'lk2', body = '', query = '') {
-  const saltVal = salt[saltType] || salt.lk2
-  const t = Math.floor(Date.now() / 1000)
-  const r = _.random(100001, 200000)
-  let ds = `salt=${saltVal}&t=${t}&r=${r}`
-  if (body || query) ds += `&b=${body}&q=${query}`
-  return `${t},${r},${md5(ds)}`
-}
-
 function getDsSign (saltType = 'k2') {
   const saltVal = salt[saltType] || salt.k2
   const t = Math.floor(Date.now() / 1000)
@@ -75,6 +66,5 @@ export default {
   gameMap,
   randomString,
   getDeviceGuid,
-  getDs,
   getDsSign
 }
