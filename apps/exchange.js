@@ -29,12 +29,6 @@ export class Exchange extends plugin {
     const msg = this.e.msg.replace(/^#?米游币兑换\s*/, '').trim()
     if (!msg) return false
 
-    if (msg.startsWith('+') || msg.startsWith('加')) {
-      return this._addPlan(msg.replace(/^[+加]\s*/, '').trim())
-    }
-    if (msg.startsWith('-') || msg.startsWith('删') || msg.startsWith('减')) {
-      return this._removePlan(msg.replace(/^[-删减]\s*/, '').trim())
-    }
     if (msg === '列表' || msg === 'list') return this.listPlans()
 
     const quick = this._parseQuickAdd(msg)
@@ -114,7 +108,7 @@ export class Exchange extends plugin {
     const specifiedUid = parts[1] || ''
 
     if (!/^\d+$/.test(goodsId)) {
-      await this.reply('⚠️ 商品ID必须为数字\n用法：#米游币兑换+ <商品ID> [UID]')
+      await this.reply('⚠️ 商品ID必须为数字')
       return false
     }
 
@@ -280,32 +274,6 @@ export class Exchange extends plugin {
     return 'cn_gf01'
   }
 
-  async _removePlan (goodsId) {
-    const userId = this._userId
-    const pending = ExchangePlanManager.listUserPlans(userId).filter(p =>
-      p.goodsId === String(goodsId) && p.status === 'pending'
-    )
-
-    if (!pending.length) {
-      await this.reply(`❌ 未找到商品ID为 ${goodsId} 的兑换计划`)
-      return false
-    }
-
-    if (pending.length > 1) {
-      await this.reply(
-        `⚠️ 该商品存在 ${pending.length} 个待兑换计划（分布在不同账号），\n` +
-        `请使用 #兑换计划 查看序号后，发送 #兑换计划删除<序号> 进行删除`
-      )
-      return false
-    }
-
-    const plan = pending[0]
-    Scheduler.cancelPlan(plan.id)
-    ExchangePlanManager.removePlan(userId, plan.id)
-    await this.reply(`🗑️ 已删除兑换计划：${plan.goodsName}`)
-    return false
-  }
-
   async _getOrderedPlans (userId) {
     const plans = ExchangePlanManager.listUserPlans(userId)
     if (!plans.length) {
@@ -381,7 +349,7 @@ export class Exchange extends plugin {
   async listPlans () {
     const { groups, total, accountCount } = await this._getOrderedPlans(this._userId)
     if (!total) {
-      await this.reply('📋 你还没有兑换计划\n使用 #米游币兑换+ <商品ID> 添加')
+      await this.reply('📋 你还没有兑换计划\n使用 #米游币商品 <类别> 查看商品，再用 #米游币兑换<类别><序号> 添加')
       return false
     }
 
