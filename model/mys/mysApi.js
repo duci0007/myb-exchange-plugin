@@ -9,6 +9,7 @@ export default class MysApi {
     this.cookie = cookie
     this.deviceId = deviceId || mysTool.getDeviceGuid()
     this.deviceFp = deviceFp || ''
+    this.deviceName = mysTool.randomString(8)
   }
 
   async getFp (seedId) {
@@ -45,10 +46,10 @@ export default class MysApi {
       device_fp: '38d7ee834d1e9'
     })
 
+    const timeoutMs = Cfg.get('exchange.timeout', 15) * 1000
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const timeoutMs = Cfg.get('exchange.timeout', 15) * 1000
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
       const res = await fetch(mysTool.api.deviceFp, {
         method: 'post',
         headers: {
@@ -108,7 +109,7 @@ export default class MysApi {
       'x-rpc-device_fp': this.deviceFp || '',
       'x-rpc-device_id': this.deviceId,
       'x-rpc-device_model': 'iPhone12,5',
-      'x-rpc-device_name': mysTool.randomString(8),
+      'x-rpc-device_name': this.deviceName,
       'x-rpc-sys_version': '17.0.2',
       'Cookie': this.cookie
     }
@@ -145,8 +146,9 @@ export default class MysApi {
       try {
         data = JSON.parse(text)
       } catch (e) {
-        if (text.startsWith('(')) {
-          data = JSON.parse(text.replace(/\(|\)/g, ''))
+        const jsonpMatch = /^\((.+)\)$/s.exec(text)
+        if (jsonpMatch) {
+          data = JSON.parse(jsonpMatch[1])
         } else {
           throw e
         }

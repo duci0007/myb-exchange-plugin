@@ -77,10 +77,8 @@ class ExchangeScheduler {
         const acc = await Account.getByUid(plan.userId, plan.gameUid, game)
         if (acc) return { account: acc, source: `UID ${plan.gameUid} (${game})` }
       }
-      if (!plan.gameUid) {
-        const acc = await Account.get(plan.userId)
-        if (acc) return { account: acc, source: '默认账号' }
-      }
+      const acc = await Account.get(plan.userId)
+      if (acc) return { account: acc, source: '默认账号' }
       return { account: null, source: '' }
     })()
 
