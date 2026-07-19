@@ -11,7 +11,6 @@ class ExchangeScheduler {
 
   init () {
     this.rescheduleAll()
-    logger.mark(`[兑换插件]调度器初始化完成，当前待兑换计划：${ExchangePlanManager.listPendingPlans().length} 个`)
   }
 
   rescheduleAll () {
@@ -48,7 +47,7 @@ class ExchangeScheduler {
     }, delay)
 
     this.timers.set(plan.id, timer)
-    logger.mark(`[兑换插件]已调度计划 ${plan.id} (${plan.goodsName})，${(delay / 1000).toFixed(0)} 秒后开始`)
+    logger.debug(`[兑换插件]已调度计划 ${plan.id} (${plan.goodsName})，${(delay / 1000).toFixed(0)} 秒后开始`)
     return true
   }
 

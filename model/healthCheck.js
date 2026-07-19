@@ -45,15 +45,10 @@ class HealthChecker {
   }
 
   init () {
-    if (!Cfg.get('healthCheck.enable', true)) {
-      logger.mark('[兑换插件]健康检测已关闭')
-      return
-    }
+    if (!Cfg.get('healthCheck.enable', true)) return
 
     const intervalDays = Cfg.get('healthCheck.intervalDays', 3)
     const hour = Cfg.get('healthCheck.hour', 4)
-
-    logger.mark(`[兑换插件]健康检测已启动，每 ${intervalDays} 天 ${hour}:00 检测一次`)
 
     this._scheduleNext(intervalDays, hour)
   }
@@ -75,8 +70,6 @@ class HealthChecker {
         this._scheduleNext(intervalDays, hour)
       })
     }, delay)
-
-    logger.mark(`[兑换插件]下次检测时间：${next.toLocaleString('zh-CN')}`)
   }
 
   async runCheck () {
