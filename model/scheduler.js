@@ -4,6 +4,22 @@ import MysApi from './mys/mysApi.js'
 import Account from './account.js'
 import { mapGameBizToKey } from './gameMap.js'
 
+async function _readAddressFromStorage (userId) {
+  const key = `myb_exchange_address:${userId}`
+  try {
+    const cached = await redis.get(key)
+    if (cached) return JSON.parse(cached)
+  } catch {}
+  try {
+    const data = Cfg.getData(`address_${userId}.json`)
+    if (data?.id) {
+      await redis.set(key, JSON.stringify(data), { EX: 30 * 24 * 3600 })
+      return data
+    }
+  } catch {}
+  return null
+}
+
 class ExchangeScheduler {
   constructor () {
     this.timers = new Map()
@@ -120,6 +136,25 @@ class ExchangeScheduler {
     // 等待预热完成（通常已在账号查询期间完成）
     await warmupPromise
 
+    // 实物商品：若计划创建时地址为空（旧数据或 Redis 已过期），执行前补读
+    if (!plan.isVirtual && !plan.addressId) {
+      const addr = await _readAddressFromStorage(plan.userId)
+      if (!addr) {
+        logger.error(`[兑换插件]计划 ${plan.id} 缺少收货地址，请先执行 #米游币地址 设置`)
+        ExchangePlanManager.updatePlan(plan.id, {
+          status: 'failed',
+          result: { success: false, retcode: -1, message: '缺少收货地址，请先设置' },
+          finishedAt: Date.now()
+        })
+        this.timers.delete(plan.id)
+        await this._notifyResult(plan, false, { message: '缺少收货地址，请先执行 #米游币地址 设置' }, [])
+        return { success: false }
+      }
+      ExchangePlanManager.updatePlan(plan.id, { addressId: addr.id, addressText: addr.addr_ext })
+      plan = { ...plan, addressId: addr.id, addressText: addr.addr_ext }
+      logger.info(`[兑换插件]计划 ${plan.id} 补充收货地址: ${addr.addr_ext}`)
+    }
+
     logger.mark(`[兑换插件]计划 ${plan.id} 使用账号 ${accountSource || account.ltuid} 进行兑换`)
 
     const threadCount = Cfg.get('exchange.threadCount', 3)
@@ -208,10 +243,22 @@ class ExchangeScheduler {
           return lastResult
         }
 
+        // 限流时用更长的退避，避免继续触发
+        if (res.retcode === -429 || res.rateLimited) {
+          const backoff = retryInterval * 3 + Math.floor(Math.random() * 300)
+          logger.warn(`[兑换插件][线程${threadIndex}]触发限流，等待 ${backoff}ms 后重试，第${retry + 1}次`)
+          if (retry < retryCount) {
+            await new Promise(r => setTimeout(r, backoff))
+          }
+          continue
+        }
+
         logger.warn(`[兑换插件][线程${threadIndex}]兑换失败: retcode=${res.retcode}, msg=${res.message}, 耗时 ${elapsed}ms, 第${retry + 1}次`)
 
         if (retry < retryCount) {
-          await new Promise(r => setTimeout(r, retryInterval))
+          // 加随机抖动，错开多线程重试时间
+          const jitter = Math.floor(Math.random() * 100)
+          await new Promise(r => setTimeout(r, retryInterval + jitter))
         }
       } catch (e) {
         logger.error(`[兑换插件][线程${threadIndex}]兑换异常: ${e.message}, 第${retry + 1}次`)

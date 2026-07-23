@@ -398,10 +398,19 @@ export class Exchange extends plugin {
   }
 
   async _getAddress () {
-    const addrStr = await redis.get(`myb_exchange_address:${this._userId}`)
+    const key = `myb_exchange_address:${this._userId}`
+    const addrStr = await redis.get(key)
     if (addrStr) {
       try { return JSON.parse(addrStr) } catch { return null }
     }
+    // Redis 为空时从文件兜底读取，并回写 Redis
+    try {
+      const data = Cfg.getData(`address_${this._userId}.json`)
+      if (data?.id) {
+        await redis.set(key, JSON.stringify(data), { EX: 30 * 24 * 3600 })
+        return data
+      }
+    } catch {}
     return null
   }
 

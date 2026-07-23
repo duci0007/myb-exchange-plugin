@@ -89,11 +89,13 @@ export class Address extends plugin {
   }
 
   async _saveAddress (addr) {
-    await redis.set(
-      `myb_exchange_address:${this._userId}`,
-      JSON.stringify({ id: String(addr.id), addr_ext: addr.addr_ext || addr.connect_addr }),
-      { EX: 30 * 24 * 3600 }
-    )
+    const data = { id: String(addr.id), addr_ext: addr.addr_ext || addr.connect_addr }
+    const json = JSON.stringify(data)
+    // Redis 缓存（30天）
+    await redis.set(`myb_exchange_address:${this._userId}`, json, { EX: 30 * 24 * 3600 })
+    // 文件兜底：Redis 重启会清空内存，文件不会丢
+    const { default: Cfg } = await import('../model/Cfg.js')
+    Cfg.setData(`address_${this._userId}.json`, data)
   }
 
   async _listAddress () {

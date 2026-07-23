@@ -141,7 +141,19 @@ export default class MysApi {
         signal: controller.signal
       })
       clearTimeout(timer)
+
+      // 米游社限流时直接返回纯文本，提前识别避免 JSON 解析报错
+      if (res.status === 429) {
+        return { retcode: -429, message: '请求过于频繁，请稍后再试', rateLimited: true }
+      }
+
       const text = await res.text()
+
+      // 部分 CDN/代理会在 200 状态码下返回限流文本
+      if (text.startsWith('Too Many Requests')) {
+        return { retcode: -429, message: '请求过于频繁，请稍后再试', rateLimited: true }
+      }
+
       let data
       try {
         data = JSON.parse(text)
@@ -248,17 +260,19 @@ export default class MysApi {
   /** 预热到兑换接口的 TCP/TLS 连接，减少首次请求耗时 */
   async warmup () {
     try {
-      const url = new URL(mysTool.goodsApi.exchange)
-      const dummyUrl = `https://${url.host}/`
+      // 发送轻量 GET 到同域接口，建立 keep-alive 连接供 exchange 复用
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 3000)
-      await fetch(dummyUrl, {
-        method: 'HEAD',
+      await fetch(`${mysTool.goodsApi.list}?app_id=1&point_sn=myb&page_size=1&page=1`, {
+        method: 'GET',
         signal: controller.signal,
-        headers: { 'Host': url.host }
+        headers: {
+          'Host': 'api-takumi.miyoushe.com',
+          'User-Agent': `Mozilla/5.0 (iPhone; CPU iPhone OS 14_0_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/${mysTool.APP_VERSION}`
+        }
       }).catch(() => {})
       clearTimeout(timer)
-    } catch (e) {
+    } catch {
       // 预热失败不影响后续流程
     }
   }
