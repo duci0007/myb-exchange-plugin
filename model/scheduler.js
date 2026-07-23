@@ -26,7 +26,24 @@ class ExchangeScheduler {
   }
 
   init () {
+    this.cleanupExpired()
     this.rescheduleAll()
+  }
+
+  /** 清理已过兑换时间超过 5 分钟的计划（无论成功/失败/pending） */
+  cleanupExpired () {
+    const expireAfterMs = Cfg.get('exchange.expireAfterMin', 5) * 60 * 1000
+    const now = Date.now()
+    const all = ExchangePlanManager.listAll()
+    for (const plan of all) {
+      if (!plan.exchangeTime) continue
+      const expireAt = plan.exchangeTime * 1000 + expireAfterMs
+      if (now >= expireAt) {
+        this.timers.delete(plan.id)
+        ExchangePlanManager.removePlanById(plan.id)
+        logger.debug(`[兑换插件]计划 ${plan.id} (${plan.goodsName}) 已过期超过 ${Cfg.get('exchange.expireAfterMin', 5)} 分钟，自动删除`)
+      }
+    }
   }
 
   rescheduleAll () {

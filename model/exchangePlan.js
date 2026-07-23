@@ -114,6 +114,21 @@ class ExchangePlanManager {
       .sort((a, b) => a.exchangeTime - b.exchangeTime)
     return pending[0] || null
   }
+
+  listAll () {
+    return [...this.plans]
+  }
+
+  removePlanById (planId) {
+    const idx = this.plans.findIndex(p => p.id === planId)
+    if (idx > -1) {
+      const plan = this.plans[idx]
+      this.plans.splice(idx, 1)
+      this._save()
+      return plan
+    }
+    return null
+  }
 }
 
 export default new ExchangePlanManager()
