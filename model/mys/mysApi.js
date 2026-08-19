@@ -67,11 +67,15 @@ export default class MysApi {
         this.deviceFp = data.data.device_fp
         return this.deviceFp
       }
-      return ''
+      // API 返回失败时，本地生成兜底（参照 nonebot-plugin-mystool 的 generate_fp_locally）
+      logger.warn(`[兑换插件]获取设备指纹API返回失败(retcode=${data.retcode})，使用本地生成`)
+      this.deviceFp = mysTool.generateFpLocally()
+      return this.deviceFp
     } catch (e) {
       clearTimeout(timer)
-      logger.error(`[兑换插件]获取设备指纹失败: ${e.message}`)
-      return ''
+      logger.error(`[兑换插件]获取设备指纹失败: ${e.message}，使用本地生成`)
+      this.deviceFp = mysTool.generateFpLocally()
+      return this.deviceFp
     }
   }
 
@@ -111,6 +115,7 @@ export default class MysApi {
       'x-rpc-device_model': 'iPhone12,5',
       'x-rpc-device_name': this.deviceName,
       'x-rpc-sys_version': '17.0.2',
+      'DS': mysTool.getDsSign('k2'),
       'Cookie': this.cookie
     }
   }
@@ -165,9 +170,24 @@ export default class MysApi {
           throw e
         }
       }
+
+      // 参照 nonebot-plugin-mystool 的 ApiResultHandler：统一处理 retcode/status 字段
+      if (typeof data.retcode === 'undefined' && typeof data.status !== 'undefined') {
+        data.retcode = data.status
+      }
+
+      // 登录失效检测（retcode -100 或 1034）
+      if (data.retcode === -100 || data.retcode === 1034) {
+        data.loginExpired = true
+      }
+
       return data
     } catch (e) {
       clearTimeout(timer)
+      if (e.name === 'AbortError') {
+        logger.error(`[兑换插件]请求超时 ${url}`)
+        return { retcode: -1, message: '请求超时', timeout: true }
+      }
       logger.error(`[兑换插件]请求失败 ${url}: ${e.message}`)
       return { retcode: -1, message: e.message, error: true }
     }

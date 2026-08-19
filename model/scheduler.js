@@ -154,7 +154,7 @@ class ExchangeScheduler {
     await warmupPromise
 
     // 实物商品：若计划创建时地址为空（旧数据或 Redis 已过期），执行前补读
-    if (!plan.isVirtual && !plan.addressId) {
+    if (!plan.addressId) {
       const addr = await _readAddressFromStorage(plan.userId)
       if (!addr) {
         logger.error(`[兑换插件]计划 ${plan.id} 缺少收货地址，请先执行 #米游币地址 设置`)
@@ -177,6 +177,12 @@ class ExchangeScheduler {
     const threadCount = Cfg.get('exchange.threadCount', 3)
     const sleepTime = Cfg.get('exchange.sleepTime', 100)
     const retryCount = Cfg.get('exchange.retryCount', 2)
+
+    // 多计划同时开兑时，随机错开 0~500ms 减少并发限流
+    const staggerDelay = Math.floor(Math.random() * 500)
+    if (staggerDelay > 0) {
+      await new Promise(r => setTimeout(r, staggerDelay))
+    }
 
     // 所有线程共享同一个 MysApi 实例（Cookie/DeviceId/FP 一致）
     const sharedMysApi = new MysApi(account.cookie, plan.deviceId, plan.deviceFp)
@@ -253,16 +259,35 @@ class ExchangeScheduler {
           elapsed
         }
 
-        if ([-100, 1034, 5003, 10035, 10041].includes(res.retcode) ||
+        // 登录失效：不重试，直接返回
+        if (res.loginExpired || [-100, 1034].includes(res.retcode)) {
+          logger.warn(`[兑换插件][线程${threadIndex}]登录失效（retcode=${res.retcode}），停止重试`)
+          lastResult.message = `登录失效: ${res.message || ''}（请重新登录后重试）`
+          lastResult.loginExpired = true
+          return lastResult
+        }
+
+        // 验证码/风控：不重试，直接返回
+        if ([5003, 10035, 10041].includes(res.retcode) ||
             res.message?.includes('验证') || res.message?.includes('风险')) {
           logger.warn(`[兑换插件][线程${threadIndex}]触发验证码（retcode=${res.retcode}），本插件不处理`)
           lastResult.message = `触发验证码: ${res.message || ''}（请确保 ji-plugin 已开启全局验证码处理）`
           return lastResult
         }
 
-        // 限流时用更长的退避，避免继续触发
+        // 商品已售罄/不在兑换时间：不重试
+        if ([-2001, 2026].includes(res.retcode)) {
+          logger.warn(`[兑换插件][线程${threadIndex}]商品不可兑换（retcode=${res.retcode}），停止重试`)
+          lastResult.message = `商品不可兑换: ${res.message || ''}`
+          return lastResult
+        }
+
+        // 限流时使用指数退避，避免继续触发（参照 tenacity 的 wait_exponential）
         if (res.retcode === -429 || res.rateLimited) {
-          const backoff = retryInterval * 3 + Math.floor(Math.random() * 300)
+          const baseBackoff = retryInterval * 2
+          const expBackoff = Math.min(baseBackoff * Math.pow(2, retry), 10000)
+          const jitter = Math.floor(Math.random() * 300)
+          const backoff = expBackoff + jitter
           logger.warn(`[兑换插件][线程${threadIndex}]触发限流，等待 ${backoff}ms 后重试，第${retry + 1}次`)
           if (retry < retryCount) {
             await new Promise(r => setTimeout(r, backoff))
@@ -308,12 +333,33 @@ class ExchangeScheduler {
           `⏱️ 耗时：${result?.elapsed || 0}ms\n` +
           `📝 消息：${result?.message || '成功'}`
       } else {
-        const firstResult = allResults[0] || {}
+        // 优先显示非限流、非异常的错误信息
+        const informativeResult = allResults.find(r =>
+          r?.retcode !== -429 && r?.retcode !== -1 && r?.retcode !== -2
+        ) || allResults[0] || {}
+
+        let errorDetail = `📝 错误：${informativeResult?.message || '未知错误'}\n` +
+          `🔢 错误码：${informativeResult?.retcode || '?'}`
+
+        // 登录失效提示
+        if (informativeResult?.loginExpired || [-100, 1034].includes(informativeResult?.retcode)) {
+          errorDetail += '\n💡 请重新登录后重试'
+        }
+
+        // 验证码提示
+        if ([5003, 10035, 10041].includes(informativeResult?.retcode)) {
+          errorDetail += '\n💡 请确保已配置验证码处理（ji-plugin）'
+        }
+
+        // 所有线程都限流
+        if (informativeResult?.retcode === -429 && allResults.every(r => r?.retcode === -429 || r?.retcode === -2)) {
+          errorDetail += '\n💡 请求过于频繁，可尝试减少兑换线程数'
+        }
+
         msg = `❌ 兑换失败\n` +
           `📦 商品：${plan.goodsName}\n` +
           `💰 价格：${plan.price} 米游币\n` +
-          `📝 错误：${firstResult?.message || '未知错误'}\n` +
-          `🔢 错误码：${firstResult?.retcode || '?'}`
+          errorDetail
       }
 
       await user.sendMsg(msg).catch(err => {

@@ -25,7 +25,6 @@ class ExchangePlanManager {
       goodsName: plan.goodsName || '',
       price: plan.price || 0,
       exchangeTime: plan.exchangeTime || 0,
-      isVirtual: plan.isVirtual || false,
       gameBiz: plan.gameBiz || '',
       gameUid: plan.gameUid || '',
       ltuid: plan.ltuid || '',

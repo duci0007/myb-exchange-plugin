@@ -6,6 +6,9 @@ import Account from '../model/account.js'
 import mysTool from '../model/mys/mysTool.js'
 import { GAME_MAP, mapGameBizToKey, gameLabel } from '../model/gameMap.js'
 
+// TRSSYz 的 setContext/getContext/finish 不生效，用内存 Map 替代
+const pendingExchangeConfirmMap = new Map() // userId -> { addrList, goodsId, good, exchangeTime, useAccount, useUid, timer }
+
 export class Exchange extends plugin {
   constructor () {
     super({
@@ -16,7 +19,9 @@ export class Exchange extends plugin {
       rule: [
         { reg: '^#米游币兑换(.+)?$', fnc: 'exchangeCmd', permission: 'all' },
         { reg: '^#兑换计划删除(.+)?$', fnc: 'removePlanByIndex', permission: 'all' },
-        { reg: '^#兑换计划$', fnc: 'listPlans', permission: 'all' }
+        { reg: '^#兑换计划$', fnc: 'listPlans', permission: 'all' },
+        // 兜底规则：处理多地址确认时的用户输入
+        { reg: /.*/, fnc: 'handlePendingExchangeConfirm', permission: 'all' }
       ]
     })
   }
@@ -136,7 +141,6 @@ export class Exchange extends plugin {
         return false
       }
 
-      const isVirtual = Number(good.type) === 1
       const exchangeTime = Number(good.next_time) || Number(good.start) || 0
 
       if (exchangeTime * 1000 < Date.now()) {
@@ -149,8 +153,10 @@ export class Exchange extends plugin {
       let useUid = ''
       let addr = null
 
-      if (isVirtual) {
-        // 虚拟商品：自动用当前游戏的主 UID；用户也可在指令中带 UID 指定
+      const hasGameBiz = !!good.game_biz
+
+      // 游戏相关商品：自动用当前游戏的主 UID；用户也可在指令中带 UID 指定
+      if (hasGameBiz) {
         const gameKey = mapGameBizToKey(good.game_biz || '')
 
         if (specifiedUid) {
@@ -176,43 +182,47 @@ export class Exchange extends plugin {
           useUid = String(gameAccount.uid)
           useAccount = gameAccount
         }
-      } else {
-        // 实物商品：实时拉取米游社地址列表
-        const mysApi2 = new MysApi(account.cookie, account.device)
-        const addrRes = await mysApi2.getAddress(Math.round(Date.now()))
-        if (addrRes.retcode !== 0 || !addrRes.data?.list?.length) {
-          await this.reply('⚠️ 未找到收货地址，请先在米游社 APP 中添加地址\n添加后发送 #米游币地址 刷新缓存')
-          return false
-        }
-        const addrList = addrRes.data.list
-
-        if (addrList.length === 1) {
-          // 只有一个地址，直接使用
-          addr = { id: String(addrList[0].id), addr_ext: addrList[0].addr_ext || addrList[0].connect_addr }
-        } else {
-          // 多个地址：展示当前缓存地址，让用户确认或选择
-          const cachedAddr = await this._getAddress()
-          let addrMsg = '📍 检测到多个收货地址，请确认使用哪个：\n\n'
-          addrList.forEach((a, i) => {
-            const isCurrent = cachedAddr && String(a.id) === String(cachedAddr.id)
-            addrMsg += `${i + 1}. ${isCurrent ? '【当前】' : ''}${a.addr_ext || a.connect_addr}\n`
-            addrMsg += `   ${a.recipient_name} ${a.recipient_phone}\n\n`
-          })
-          addrMsg += '发送序号选择地址，或发送"取消"退出'
-          await this.reply(addrMsg, true)
-          // 暂存所有待确认的上下文，等用户选择后由 confirmExchangeAddress 继续
-          this.setContext('confirmExchangeAddress', {
-            addrList,
-            goodsId, good, isVirtual, exchangeTime,
-            useAccount, useUid,
-            timeout: 60, prompt: ''
-          })
-          return true
-        }
       }
 
-      // 单地址/虚拟商品：直接进入公共创建流程
-      await this._finalizePlan({ goodsId, good, isVirtual, exchangeTime, useAccount, useUid, addr })
+      // 始终拉取收货地址（实物商品需要，虚拟商品有地址也不影响）
+      {
+        const mysApi2 = new MysApi(account.cookie, account.device)
+        const addrRes = await mysApi2.getAddress(Math.round(Date.now()))
+        if (addrRes.retcode === 0 && addrRes.data?.list?.length) {
+          const addrList = addrRes.data.list
+
+          if (addrList.length === 1) {
+            // 只有一个地址，直接使用
+            addr = { id: String(addrList[0].id), addr_ext: addrList[0].addr_ext || addrList[0].connect_addr }
+          } else {
+            // 多个地址：展示当前缓存地址，让用户确认或选择
+            const cachedAddr = await this._getAddress()
+            let addrMsg = '📍 检测到多个收货地址，请确认使用哪个：\n\n'
+            addrList.forEach((a, i) => {
+              const isCurrent = cachedAddr && String(a.id) === String(cachedAddr.id)
+              addrMsg += `${i + 1}. ${isCurrent ? '【当前】' : ''}${a.addr_ext || a.connect_addr}\n`
+              addrMsg += `   ${a.connect_name} ${a.connect_mobile}\n\n`
+            })
+            addrMsg += '发送序号选择地址，或发送"取消"退出'
+            await this.reply(addrMsg, true)
+            // 用内存 Map 存储待确认上下文（TRSSYz 的 setContext 不生效）
+            const userId = this._userId
+            this._clearPendingExchangeConfirm(userId)
+            const timer = setTimeout(() => {
+              pendingExchangeConfirmMap.delete(userId)
+            }, 10 * 60 * 1000)
+            pendingExchangeConfirmMap.set(userId, {
+              addrList, goodsId, good, exchangeTime,
+              useAccount, useUid, timer
+            })
+            return true
+          }
+        }
+        // 无地址时：虚拟商品仍可继续（不需要地址），实物商品会在兑换时因缺少地址失败
+      }
+
+      // 单地址/无地址：直接进入公共创建流程
+      await this._finalizePlan({ goodsId, good, exchangeTime, useAccount, useUid, addr })
       return false
     } catch (e) {
       logger.error(`[兑换插件]添加兑换计划异常: ${e.message}`)
@@ -229,20 +239,42 @@ export class Exchange extends plugin {
     return 'cn_gf01'
   }
 
-  /** 用户多地址时的确认回调 */
-  async confirmExchangeAddress () {
+  /** 用户多地址时的确认回调（原 setContext 方式，现改为兜底规则触发） */
+  async handlePendingExchangeConfirm () {
+    const userId = this._userId
+    if (!pendingExchangeConfirmMap.has(userId)) return false
+
     const input = this.e.msg.trim()
-    const ctx = this.getContext('confirmExchangeAddress')
+    // 如果用户发送了其他命令，取消待处理并放行
+    if (input.startsWith('#')) {
+      this._clearPendingExchangeConfirm(userId)
+      return false
+    }
+
+    return this._confirmExchangeAddress(input)
+  }
+
+  _clearPendingExchangeConfirm (userId) {
+    const pending = pendingExchangeConfirmMap.get(userId)
+    if (pending) {
+      clearTimeout(pending.timer)
+      pendingExchangeConfirmMap.delete(userId)
+    }
+  }
+
+  async _confirmExchangeAddress (input) {
+    const userId = this._userId
+    const ctx = pendingExchangeConfirmMap.get(userId)
     if (!ctx) return false
 
     if (input === '取消') {
-      this.finish('confirmExchangeAddress')
+      this._clearPendingExchangeConfirm(userId)
       await this.reply('❌ 已取消添加兑换计划')
       return false
     }
 
     const idx = parseInt(input) - 1
-    const { addrList, goodsId, good, isVirtual, exchangeTime, useAccount, useUid } = ctx
+    const { addrList, goodsId, good, exchangeTime, useAccount, useUid } = ctx
 
     if (isNaN(idx) || idx < 0 || idx >= addrList.length) {
       await this.reply(`⚠️ 序号无效，请输入 1~${addrList.length} 或发送"取消"`)
@@ -253,14 +285,14 @@ export class Exchange extends plugin {
     const addr = { id: String(chosen.id), addr_ext: chosen.addr_ext || chosen.connect_addr }
 
     // 同时更新地址缓存
-    const key = `myb_exchange_address:${this._userId}`
+    const key = `myb_exchange_address:${userId}`
     await redis.set(key, JSON.stringify(addr), { EX: 30 * 24 * 3600 })
-    Cfg.setData(`address_${this._userId}.json`, addr)
+    Cfg.setData(`address_${userId}.json`, addr)
 
-    this.finish('confirmExchangeAddress')
+    this._clearPendingExchangeConfirm(userId)
 
     try {
-      await this._finalizePlan({ goodsId, good, isVirtual, exchangeTime, useAccount, useUid, addr })
+      await this._finalizePlan({ goodsId, good, exchangeTime, useAccount, useUid, addr })
     } catch (e) {
       logger.error(`[兑换插件]确认地址后创建计划异常: ${e.message}`)
       await this.reply(`❌ 创建计划时发生错误：${e.message}`)
@@ -272,7 +304,7 @@ export class Exchange extends plugin {
    * 完成计划创建的公共逻辑（重复检查、余额检查、写入、调度）
    * 供 _addPlan（单地址/虚拟）和 confirmExchangeAddress（多地址确认后）共用
    */
-  async _finalizePlan ({ goodsId, good, isVirtual, exchangeTime, useAccount, useUid, addr }) {
+  async _finalizePlan ({ goodsId, good, exchangeTime, useAccount, useUid, addr }) {
     const userId = this._userId
     const account = await Account.get(userId)
 
@@ -308,22 +340,25 @@ export class Exchange extends plugin {
       logger.warn(`[兑换插件]查询余额失败，跳过余额检查: retcode=${balanceRes.retcode}, msg=${balanceRes.message}`)
     }
 
+    // 始终尝试获取地址；无地址时 scheduler 会补读
+
     const planData = {
       goodsId: String(goodsId),
       goodsName: good.goods_name || '未命名',
       price: good.price || 0,
       exchangeTime,
-      isVirtual,
       gameBiz: good.game_biz || '',
       ltuid: useAccount.ltuid,
       deviceId: useAccount.device || account?.device || mysTool.getDeviceGuid(),
       deviceFp: ''
     }
 
-    if (isVirtual) {
+    // 同时存储 UID 和地址（实物商品可能同时需要两者）
+    if (useUid) {
       planData.gameUid = useUid
       planData.region = this._guessRegion(useUid)
-    } else {
+    }
+    if (addr) {
       planData.addressId = addr.id
       planData.addressText = addr.addr_ext
     }

@@ -58,6 +58,21 @@ function getDsSign (saltType = 'k2') {
   return `${t},${r},${md5(`salt=${saltVal}&t=${t}&r=${r}`)}`
 }
 
+/**
+ * 本地生成 device_fp（参照 nonebot-plugin-mystool 的 generate_fp_locally）
+ * 当 getFp API 请求失败时作为兜底，避免兑换请求因缺少 device_fp 而失败
+ * @param {number} length - device_fp 长度，默认 13
+ * @returns {string} 随机十六进制字符串
+ */
+function generateFpLocally (length = 13) {
+  const chars = '0123456789abcdef'
+  let result = ''
+  for (let i = 0; i < length; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return result
+}
+
 export default {
   APP_VERSION,
   salt,
@@ -66,5 +81,6 @@ export default {
   gameMap,
   randomString,
   getDeviceGuid,
-  getDsSign
+  getDsSign,
+  generateFpLocally
 }

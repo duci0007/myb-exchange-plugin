@@ -2,6 +2,9 @@ import Cfg from '../model/Cfg.js'
 import MysApi from '../model/mys/mysApi.js'
 import Account from '../model/account.js'
 
+// TRSSYz 的 setContext/getContext/finish 不生效，用内存 Map 替代
+const pendingAddressMap = new Map() // userId -> { addresses, timer }
+
 export class Address extends plugin {
   constructor () {
     super({
@@ -10,7 +13,9 @@ export class Address extends plugin {
       event: 'message',
       priority: Cfg.get('plugin.priority', 100),
       rule: [
-        { reg: '^#米游币地址(.+)?$', fnc: 'addressCmd', permission: 'all' }
+        { reg: '^#米游币地址(.+)?$', fnc: 'addressCmd', permission: 'all' },
+        // 兜底规则：TRSSYz 的 setContext 不生效，用 RegExp 字面量捕获任意消息
+        { reg: /.*/, fnc: 'handlePendingAddress', permission: 'all' }
       ]
     })
   }
@@ -60,21 +65,36 @@ export class Address extends plugin {
     addrList.forEach((addr, i) => {
       const defaultTag = addr.is_default ? '【默认】' : ''
       addrMsg += `${i + 1}. ${defaultTag}${addr.addr_ext || addr.connect_addr}\n`
-      addrMsg += `   收件人：${addr.recipient_name} | ${addr.recipient_phone}\n\n`
+      addrMsg += `   收件人：${addr.connect_name} | ${addr.connect_mobile}\n\n`
     })
 
     await this.reply(addrMsg, true)
-    this.setContext('selectAddress', { addresses: addrList, timeout: 60, prompt: '' })
+
+    // 用内存 Map 替代 setContext（TRSSYz 不兼容）
+    const userId = this._userId
+    this._clearPending(userId)
+    const timer = setTimeout(() => {
+      pendingAddressMap.delete(userId)
+    }, 10 * 60 * 1000) // 10 分钟超时
+    pendingAddressMap.set(userId, { addresses: addrList, timer })
+
     return true
   }
 
   async selectAddress () {
+    const userId = this._userId
     const input = this.e.msg.trim()
     const idx = parseInt(input) - 1
-    const ctx = this.getContext('selectAddress')
-    if (!ctx) return false
+    const pending = pendingAddressMap.get(userId)
+    if (!pending) return false
 
-    const { addresses } = ctx
+    if (input === '取消') {
+      this._clearPending(userId)
+      await this.reply('❌ 已取消地址设置')
+      return false
+    }
+
+    const { addresses } = pending
     if (isNaN(idx) || idx < 0 || idx >= addresses.length) {
       await this.reply('⚠️ 序号无效，请重新输入')
       return true
@@ -83,9 +103,32 @@ export class Address extends plugin {
     const addr = addresses[idx]
     await this._saveAddress(addr)
 
-    this.finish('selectAddress')
+    this._clearPending(userId)
     await this.reply(`📍 已设置收货地址：\n${addr.addr_ext || addr.connect_addr}`)
     return false
+  }
+
+  /** 兜底处理器：TRSSYz 的 setContext 机制不生效，用此方法捕获待处理的地址选择 */
+  async handlePendingAddress () {
+    const userId = this._userId
+    if (!pendingAddressMap.has(userId)) return false // 无待处理上下文，放行
+
+    // 如果用户发送了其他命令，取消待处理并放行
+    const input = this.e.msg.trim()
+    if (input.startsWith('#')) {
+      this._clearPending(userId)
+      return false
+    }
+
+    return this.selectAddress()
+  }
+
+  _clearPending (userId) {
+    const pending = pendingAddressMap.get(userId)
+    if (pending) {
+      clearTimeout(pending.timer)
+      pendingAddressMap.delete(userId)
+    }
   }
 
   async _saveAddress (addr) {
