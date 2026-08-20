@@ -176,8 +176,8 @@ export default class MysApi {
         data.retcode = data.status
       }
 
-      // 登录失效检测（retcode -100 或 1034）
-      if (data.retcode === -100 || data.retcode === 1034) {
+      // 登录失效检测（仅 -100；1034 由 ji-plugin 过码插件处理，不在此标记）
+      if (data.retcode === -100) {
         data.loginExpired = true
       }
 

@@ -7,10 +7,12 @@ import { mapGameBizToKey } from './gameMap.js'
 /**
  * 确定性失败错误码——重试无意义，命中任一应立即停止所有线程
  * - 库存不足 / 已售罄 / 不在兑换期：-2102, -2001, 2026
- * - 登录失效：-100, 1034
- * - 人机验证 / 风控：5003, 10035, 10041
+ * - 登录失效：-100
+ *
+ * 注意：5003/10035/10041/1034 属于验证码/风控/登录态过期，
+ * 由 ji-plugin 过码插件统一处理，不在此处终止，而是继续重试。
  */
-const TERMINAL_ERRORS = new Set([-2102, -2001, 2026, -100, 1034, 5003, 10035, 10041])
+const TERMINAL_ERRORS = new Set([-2102, -2001, 2026, -100])
 
 async function _readAddressFromStorage (userId) {
   const key = `myb_exchange_address:${userId}`
@@ -186,17 +188,19 @@ class ExchangeScheduler {
     const sleepTime = Cfg.get('exchange.sleepTime', 100)
     const retryCount = Cfg.get('exchange.retryCount', 2)
 
-    // 多计划同时开兑时，随机错开 0~500ms 减少并发限流
-    const staggerDelay = Math.floor(Math.random() * 500)
-    if (staggerDelay > 0) {
-      await new Promise(r => setTimeout(r, staggerDelay))
-    }
-
     // 所有线程共享同一个 MysApi 实例（Cookie/DeviceId/FP 一致）
     const sharedMysApi = new MysApi(account.cookie, plan.deviceId, plan.deviceFp)
 
     // 共享停止信号：任一线程成功或命中确定性失败（库存不足/登录失效等）时，通知其余线程立即停止
     const stopSignal = { stopped: false }
+
+    // 抢兑关键：账号查询/连接预热/地址补读均已提前完成，
+    // 此处精确等待到开兑时间点再发请求，尽量不早不晚。
+    // （已移除原先 0~500ms 随机 staggerDelay，避免无谓延误导致抢兑慢半拍）
+    const remainMs = plan.exchangeTime * 1000 - Date.now()
+    if (remainMs > 0) {
+      await new Promise(r => setTimeout(r, remainMs))
+    }
 
     const tasks = []
     for (let i = 0; i < threadCount; i++) {
@@ -277,23 +281,30 @@ class ExchangeScheduler {
           elapsed
         }
 
-        // 登录失效
-        if (res.loginExpired || res.retcode === -100 || res.retcode === 1034) {
+        // 登录失效 -100：确定性失败（1034 交给过码插件，见下方验证码分支）
+        if (res.retcode === -100) {
           lastResult.message = `登录失效: ${res.message || ''}（请重新登录后重试）`
           lastResult.loginExpired = true
         }
 
-        // 人机验证 / 风控（含错误码和消息关键字兜底）
-        if ([5003, 10035, 10041].includes(res.retcode) ||
-            res.message?.includes('验证') || res.message?.includes('风险')) {
-          lastResult.message = `触发验证码: ${res.message || ''}（请确保 ji-plugin 已开启全局验证码处理）`
-        }
-
-        // 确定性失败：广播停止其它线程，本线程也不再重试
+        // 确定性失败：库存不足/售罄/不在兑换期/登录失效(-100)，广播停止
         if (TERMINAL_ERRORS.has(res.retcode)) {
           stopSignal && (stopSignal.stopped = true)
           logger.warn(`[兑换插件][线程${threadIndex}]确定性失败（retcode=${res.retcode}, ${res.message}），停止全部线程`)
           return lastResult
+        }
+
+        // 验证码/风控/登录态过期（5003/10035/10041/1034）：交给 ji-plugin 过码插件处理，
+        // 不终止，用较长间隔重试，给过码插件留处理时间
+        if ([5003, 10035, 10041, 1034].includes(res.retcode) ||
+            res.message?.includes('验证') || res.message?.includes('风险')) {
+          lastResult.message = `触发验证码: ${res.message || ''}（过码插件处理中）`
+          const captchaBackoff = retryInterval * 5 + Math.floor(Math.random() * 500)
+          logger.warn(`[兑换插件][线程${threadIndex}]触发验证码/风控（retcode=${res.retcode}），等待过码插件处理 ${captchaBackoff}ms，第${retry + 1}次`)
+          if (retry < retryCount) {
+            await new Promise(r => setTimeout(r, captchaBackoff))
+          }
+          continue
         }
 
         // 限流时使用指数退避（参照 tenacity 的 wait_exponential），不视为确定性失败
@@ -355,14 +366,9 @@ class ExchangeScheduler {
         let errorDetail = `📝 错误：${informativeResult?.message || '未知错误'}\n` +
           `🔢 错误码：${informativeResult?.retcode || '?'}`
 
-        // 登录失效提示
-        if (informativeResult?.loginExpired || [-100, 1034].includes(informativeResult?.retcode)) {
+        // 登录失效提示（仅 -100）
+        if (informativeResult?.loginExpired || informativeResult?.retcode === -100) {
           errorDetail += '\n💡 请重新登录后重试'
-        }
-
-        // 验证码提示
-        if ([5003, 10035, 10041].includes(informativeResult?.retcode)) {
-          errorDetail += '\n💡 请确保已配置验证码处理（ji-plugin）'
         }
 
         // 所有线程都限流

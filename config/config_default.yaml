@@ -7,7 +7,7 @@ exchange:
   retryCount: 2
   retryInterval: 200
   timeout: 15
-  preExchangeTime: 100
+  preExchangeTime: 2000
   sleepTime: 100
 
 healthCheck:
