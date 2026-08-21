@@ -1,8 +1,12 @@
 import fetch from 'node-fetch'
+import https from 'node:https'
 import mysTool from './mysTool.js'
 import Cfg from '../Cfg.js'
 
 const VERIFY_KEY = 'bll8iq97cem8'
+
+// keep-alive 连接池：跨请求复用 TCP/TLS 连接，抢兑请求免握手开销（否则每次都要 1~2 个 RTT 握手）
+const keepAliveAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30 * 1000 })
 
 export default class MysApi {
   constructor (cookie = '', deviceId = '', deviceFp = '') {
@@ -59,6 +63,7 @@ export default class MysApi {
           'User-Agent': `Mozilla/5.0 (iPhone; CPU iPhone OS 14_0_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/${mysTool.APP_VERSION}`
         },
         body,
+        agent: keepAliveAgent,
         signal: controller.signal
       })
       clearTimeout(timer)
@@ -143,6 +148,7 @@ export default class MysApi {
     try {
       const res = await fetch(url, {
         ...options,
+        agent: keepAliveAgent,
         signal: controller.signal
       })
       clearTimeout(timer)
@@ -179,6 +185,12 @@ export default class MysApi {
       // 登录失效检测（仅 -100；1034 由 ji-plugin 过码插件处理，不在此标记）
       if (data.retcode === -100) {
         data.loginExpired = true
+      }
+
+      // 1028：米游社风控限流（message 常为空），标记为限流走指数退避，避免快速重试加剧风控
+      if (data.retcode === 1028) {
+        data.message = data.message || '操作过于频繁（触发风控）'
+        data.rateLimited = true
       }
 
       return data
@@ -277,14 +289,15 @@ export default class MysApi {
     return res
   }
 
-  /** 预热到兑换接口的 TCP/TLS 连接，减少首次请求耗时 */
+  /** 预热到兑换接口的 TCP/TLS 连接（keep-alive 复用），并实测 RTT 供开售对时使用 */
   async warmup () {
     try {
-      // 发送轻量 GET 到同域接口，建立 keep-alive 连接供 exchange 复用
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 3000)
+      const start = Date.now()
       await fetch(`${mysTool.goodsApi.list}?app_id=1&point_sn=myb&page_size=1&page=1`, {
         method: 'GET',
+        agent: keepAliveAgent,
         signal: controller.signal,
         headers: {
           'Host': 'api-takumi.miyoushe.com',
@@ -292,8 +305,10 @@ export default class MysApi {
         }
       }).catch(() => {})
       clearTimeout(timer)
+      this.lastRtt = Date.now() - start
     } catch {
-      // 预热失败不影响后续流程
+      this.lastRtt = this.lastRtt || 0
     }
+    return this.lastRtt
   }
 }

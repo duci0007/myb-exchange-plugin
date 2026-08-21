@@ -9,10 +9,14 @@ import { mapGameBizToKey } from './gameMap.js'
  * - 库存不足 / 已售罄 / 不在兑换期：-2102, -2001, 2026
  * - 登录失效：-100
  *
- * 注意：5003/10035/10041/1034 属于验证码/风控/登录态过期，
- * 由 ji-plugin 过码插件统一处理，不在此处终止，而是继续重试。
+ * 注意：-2106（不在商品可兑换时间中）单独处理——开售瞬间本地时钟快于服务端时
+ * 也会返回此码，故在开售后短窗口内重试自救（见 _doExchange），出窗口才终止。
+ * 5003/10035/10041/1034 属于验证码/风控/登录态过期，由 ji-plugin 过码插件统一处理。
  */
 const TERMINAL_ERRORS = new Set([-2102, -2001, 2026, -100])
+
+// -2106 开售边界自救窗口：开售后该窗口内 -2106 视为本地时钟偏差，继续基础间隔重试
+const EXCHANGE_START_GRACE_MS = 3000
 
 async function _readAddressFromStorage (userId) {
   const key = `myb_exchange_address:${userId}`
@@ -194,10 +198,11 @@ class ExchangeScheduler {
     // 共享停止信号：任一线程成功或命中确定性失败（库存不足/登录失效等）时，通知其余线程立即停止
     const stopSignal = { stopped: false }
 
-    // 抢兑关键：账号查询/连接预热/地址补读均已提前完成，
-    // 此处精确等待到开兑时间点再发请求，尽量不早不晚。
-    // （已移除原先 0~500ms 随机 staggerDelay，避免无谓延误导致抢兑慢半拍）
-    const remainMs = plan.exchangeTime * 1000 - Date.now()
+    // 抢兑关键：账号查询/连接预热/地址补读均已提前完成。
+    // 按预热实测 RTT 的一半提前发出请求（封顶 300ms 防异常 RTT），
+    // 使请求尽量在服务端开售瞬间到达，而非等本地到点才发、到达时已晚半个 RTT。
+    const leadMs = Math.min(Math.round((warmupMysApi.lastRtt || 0) / 2), 300)
+    const remainMs = plan.exchangeTime * 1000 - leadMs - Date.now()
     if (remainMs > 0) {
       await new Promise(r => setTimeout(r, remainMs))
     }
@@ -287,6 +292,21 @@ class ExchangeScheduler {
           lastResult.loginExpired = true
         }
 
+        // -2106（不在商品可兑换时间中）：开售瞬间本地时钟略快于服务端时也会返回此码。
+        // 开售后短窗口内视为开售边界，用基础间隔重试自救；出窗口或重试耗尽才终止。
+        if (res.retcode === -2106) {
+          const sinceStart = Date.now() - plan.exchangeTime * 1000
+          if (sinceStart < EXCHANGE_START_GRACE_MS && retry < retryCount) {
+            logger.warn(`[兑换插件][线程${threadIndex}]不在可兑换时间（retcode=-2106，开售边界/时钟偏差），${retryInterval}ms 后重试，第${retry + 1}次`)
+            await new Promise(r => setTimeout(r, retryInterval))
+            continue
+          }
+          lastResult.message = '不在商品可兑换时间中（商品可能已被抢空或未到开售时间）'
+          stopSignal && (stopSignal.stopped = true)
+          logger.warn(`[兑换插件][线程${threadIndex}]确定性失败（retcode=-2106, ${res.message}），停止全部线程`)
+          return lastResult
+        }
+
         // 确定性失败：库存不足/售罄/不在兑换期/登录失效(-100)，广播停止
         if (TERMINAL_ERRORS.has(res.retcode)) {
           stopSignal && (stopSignal.stopped = true)
@@ -300,9 +320,11 @@ class ExchangeScheduler {
             res.message?.includes('验证') || res.message?.includes('风险')) {
           lastResult.message = `触发验证码: ${res.message || ''}（过码插件处理中）`
           const captchaBackoff = retryInterval * 5 + Math.floor(Math.random() * 500)
-          logger.warn(`[兑换插件][线程${threadIndex}]触发验证码/风控（retcode=${res.retcode}），等待过码插件处理 ${captchaBackoff}ms，第${retry + 1}次`)
           if (retry < retryCount) {
+            logger.warn(`[兑换插件][线程${threadIndex}]触发验证码/风控（retcode=${res.retcode}），等待过码插件处理 ${captchaBackoff}ms 后重试，第${retry + 1}次`)
             await new Promise(r => setTimeout(r, captchaBackoff))
+          } else {
+            logger.warn(`[兑换插件][线程${threadIndex}]触发验证码/风控（retcode=${res.retcode}），重试次数耗尽`)
           }
           continue
         }
@@ -312,10 +334,16 @@ class ExchangeScheduler {
           const baseBackoff = retryInterval * 2
           const expBackoff = Math.min(baseBackoff * Math.pow(2, retry), 10000)
           const jitter = Math.floor(Math.random() * 300)
-          const backoff = expBackoff + jitter
-          logger.warn(`[兑换插件][线程${threadIndex}]触发限流，等待 ${backoff}ms 后重试，第${retry + 1}次`)
+          let backoff = expBackoff + jitter
+          // 开售边界窗口内封顶退避时长，避免指数退避拖过整个抢兑窗口
+          if (Date.now() - plan.exchangeTime * 1000 < EXCHANGE_START_GRACE_MS) {
+            backoff = Math.min(backoff, 800)
+          }
           if (retry < retryCount) {
+            logger.warn(`[兑换插件][线程${threadIndex}]触发限流，等待 ${backoff}ms 后重试，第${retry + 1}次`)
             await new Promise(r => setTimeout(r, backoff))
+          } else {
+            logger.warn(`[兑换插件][线程${threadIndex}]触发限流（retcode=${res.retcode}），重试次数耗尽`)
           }
           continue
         }
@@ -358,9 +386,9 @@ class ExchangeScheduler {
           `⏱️ 耗时：${result?.elapsed || 0}ms\n` +
           `📝 消息：${result?.message || '成功'}`
       } else {
-        // 优先显示非限流、非异常的错误信息
+        // 优先显示非限流（-429/1028）、非异常的错误信息，避免风控噪音掩盖真实失败原因
         const informativeResult = allResults.find(r =>
-          r?.retcode !== -429 && r?.retcode !== -1 && r?.retcode !== -2
+          r?.retcode !== -429 && r?.retcode !== 1028 && r?.retcode !== -1 && r?.retcode !== -2
         ) || allResults[0] || {}
 
         let errorDetail = `📝 错误：${informativeResult?.message || '未知错误'}\n` +
@@ -371,8 +399,9 @@ class ExchangeScheduler {
           errorDetail += '\n💡 请重新登录后重试'
         }
 
-        // 所有线程都限流
-        if (informativeResult?.retcode === -429 && allResults.every(r => r?.retcode === -429 || r?.retcode === -2)) {
+        // 所有线程都限流（HTTP 429 或 1028 风控）
+        if ([-429, 1028].includes(informativeResult?.retcode) &&
+            allResults.every(r => r?.retcode === -429 || r?.retcode === 1028 || r?.retcode === -2)) {
           errorDetail += '\n💡 请求过于频繁，可尝试减少兑换线程数'
         }
 
