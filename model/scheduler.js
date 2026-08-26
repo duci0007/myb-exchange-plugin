@@ -18,6 +18,39 @@ const TERMINAL_ERRORS = new Set([-2102, -2001, 2026, -100])
 // -2106 开售边界自救窗口：开售后该窗口内 -2106 视为本地时钟偏差，继续基础间隔重试
 const EXCHANGE_START_GRACE_MS = 3000
 
+/**
+ * 同账号并发闸门：多个兑换计划共用同一账号（ltuid）时，共享 exchange.threadCount 个并发槽位。
+ * 实测同账号 2 计划 × 3 线程 = 6 个并发请求会全部触发米游社 1028 风控，两个计划全灭；
+ * 限制同时在飞的请求数后，后续计划的线程会在前面请求返回后立即补位，形成自然交错。
+ */
+const accountGates = new Map()
+
+async function _acquireAccountSlot (gateKey, max) {
+  let gate = accountGates.get(gateKey)
+  if (!gate) {
+    gate = { active: 0, queue: [] }
+    accountGates.set(gateKey, gate)
+  }
+  if (gate.active < max) {
+    gate.active++
+    return
+  }
+  await new Promise(resolve => gate.queue.push(resolve))
+}
+
+function _releaseAccountSlot (gateKey) {
+  const gate = accountGates.get(gateKey)
+  if (!gate) return
+  const next = gate.queue.shift()
+  if (next) {
+    // 槽位直接转移给下一个等待线程（active 不变）
+    next()
+  } else {
+    gate.active--
+    if (gate.active <= 0) accountGates.delete(gateKey)
+  }
+}
+
 async function _readAddressFromStorage (userId) {
   const key = `myb_exchange_address:${userId}`
   try {
@@ -208,8 +241,12 @@ class ExchangeScheduler {
     }
 
     const tasks = []
+    // 计划短标识（id 后缀），用于线程日志区分并发的多个计划
+    const planTag = String(plan.id).split('_').pop()
+    // 同账号并发闸门 key：多计划共用同一账号时共享并发槽位，避免瞬时并发触发 1028 风控
+    const gateKey = `ltuid_${account.ltuid || account.uid || 'default'}`
     for (let i = 0; i < threadCount; i++) {
-      tasks.push(this._doExchange(plan, sharedMysApi, i, retryCount, stopSignal))
+      tasks.push(this._doExchange(plan, sharedMysApi, i, retryCount, stopSignal, planTag, gateKey))
       if (i < threadCount - 1) {
         await new Promise(r => setTimeout(r, sleepTime))
       }
@@ -242,31 +279,48 @@ class ExchangeScheduler {
     return { success, result, results }
   }
 
-  async _doExchange (plan, mysApi, threadIndex, retryCount, stopSignal) {
+  async _doExchange (plan, mysApi, threadIndex, retryCount, stopSignal, planTag = '', gateKey = '') {
     const retryInterval = Cfg.get('exchange.retryInterval', 200)
+    const gateMax = Cfg.get('exchange.threadCount', 3)
+    const logTag = planTag ? `${planTag}][线程${threadIndex}` : `线程${threadIndex}`
     let lastResult = null
 
     for (let retry = 0; retry <= retryCount; retry++) {
       // 其它线程已成功/命中确定性失败，直接停止，不再做无意义重试
       if (stopSignal?.stopped) {
-        logger.debug(`[兑换插件][线程${threadIndex}]收到停止信号，提前退出`)
+        logger.debug(`[兑换插件][${logTag}]收到停止信号，提前退出`)
         break
       }
 
       try {
+        // 同账号并发闸门：等待槽位期间其它线程可能已成功/终止，拿到槽位后需再次确认
+        if (gateKey) {
+          await _acquireAccountSlot(gateKey, gateMax)
+          if (stopSignal?.stopped) {
+            _releaseAccountSlot(gateKey)
+            logger.debug(`[兑换插件][${logTag}]等待并发槽位期间收到停止信号，提前退出`)
+            break
+          }
+        }
+
         const start = Date.now()
-        const res = await mysApi.exchange(
-          plan.goodsId,
-          plan.addressId,
-          plan.gameUid,
-          plan.region,
-          plan.gameBiz
-        )
+        let res
+        try {
+          res = await mysApi.exchange(
+            plan.goodsId,
+            plan.addressId,
+            plan.gameUid,
+            plan.region,
+            plan.gameBiz
+          )
+        } finally {
+          if (gateKey) _releaseAccountSlot(gateKey)
+        }
         const elapsed = Date.now() - start
 
         if (res.retcode === 0) {
           stopSignal && (stopSignal.stopped = true)
-          logger.mark(`[兑换插件][线程${threadIndex}]兑换成功！${plan.goodsName}，耗时 ${elapsed}ms`)
+          logger.mark(`[兑换插件][${logTag}]兑换成功！${plan.goodsName}，耗时 ${elapsed}ms`)
           return {
             success: true,
             retcode: 0,
@@ -297,20 +351,20 @@ class ExchangeScheduler {
         if (res.retcode === -2106) {
           const sinceStart = Date.now() - plan.exchangeTime * 1000
           if (sinceStart < EXCHANGE_START_GRACE_MS && retry < retryCount) {
-            logger.warn(`[兑换插件][线程${threadIndex}]不在可兑换时间（retcode=-2106，开售边界/时钟偏差），${retryInterval}ms 后重试，第${retry + 1}次`)
+            logger.warn(`[兑换插件][${logTag}]不在可兑换时间（retcode=-2106，开售边界/时钟偏差），${retryInterval}ms 后重试，第${retry + 1}次`)
             await new Promise(r => setTimeout(r, retryInterval))
             continue
           }
           lastResult.message = '不在商品可兑换时间中（商品可能已被抢空或未到开售时间）'
           stopSignal && (stopSignal.stopped = true)
-          logger.warn(`[兑换插件][线程${threadIndex}]确定性失败（retcode=-2106, ${res.message}），停止全部线程`)
+          logger.warn(`[兑换插件][${logTag}]确定性失败（retcode=-2106, ${res.message}），停止全部线程`)
           return lastResult
         }
 
         // 确定性失败：库存不足/售罄/不在兑换期/登录失效(-100)，广播停止
         if (TERMINAL_ERRORS.has(res.retcode)) {
           stopSignal && (stopSignal.stopped = true)
-          logger.warn(`[兑换插件][线程${threadIndex}]确定性失败（retcode=${res.retcode}, ${res.message}），停止全部线程`)
+          logger.warn(`[兑换插件][${logTag}]确定性失败（retcode=${res.retcode}, ${res.message}），停止全部线程`)
           return lastResult
         }
 
@@ -321,10 +375,10 @@ class ExchangeScheduler {
           lastResult.message = `触发验证码: ${res.message || ''}（过码插件处理中）`
           const captchaBackoff = retryInterval * 5 + Math.floor(Math.random() * 500)
           if (retry < retryCount) {
-            logger.warn(`[兑换插件][线程${threadIndex}]触发验证码/风控（retcode=${res.retcode}），等待过码插件处理 ${captchaBackoff}ms 后重试，第${retry + 1}次`)
+            logger.warn(`[兑换插件][${logTag}]触发验证码/风控（retcode=${res.retcode}），等待过码插件处理 ${captchaBackoff}ms 后重试，第${retry + 1}次`)
             await new Promise(r => setTimeout(r, captchaBackoff))
           } else {
-            logger.warn(`[兑换插件][线程${threadIndex}]触发验证码/风控（retcode=${res.retcode}），重试次数耗尽`)
+            logger.warn(`[兑换插件][${logTag}]触发验证码/风控（retcode=${res.retcode}），重试次数耗尽`)
           }
           continue
         }
@@ -340,15 +394,15 @@ class ExchangeScheduler {
             backoff = Math.min(backoff, 800)
           }
           if (retry < retryCount) {
-            logger.warn(`[兑换插件][线程${threadIndex}]触发限流，等待 ${backoff}ms 后重试，第${retry + 1}次`)
+            logger.warn(`[兑换插件][${logTag}]触发限流，等待 ${backoff}ms 后重试，第${retry + 1}次`)
             await new Promise(r => setTimeout(r, backoff))
           } else {
-            logger.warn(`[兑换插件][线程${threadIndex}]触发限流（retcode=${res.retcode}），重试次数耗尽`)
+            logger.warn(`[兑换插件][${logTag}]触发限流（retcode=${res.retcode}），重试次数耗尽`)
           }
           continue
         }
 
-        logger.warn(`[兑换插件][线程${threadIndex}]兑换失败: retcode=${res.retcode}, msg=${res.message}, 耗时 ${elapsed}ms, 第${retry + 1}次`)
+        logger.warn(`[兑换插件][${logTag}]兑换失败: retcode=${res.retcode}, msg=${res.message}, 耗时 ${elapsed}ms, 第${retry + 1}次`)
 
         if (retry < retryCount) {
           // 加随机抖动，错开多线程重试时间
@@ -356,7 +410,7 @@ class ExchangeScheduler {
           await new Promise(r => setTimeout(r, retryInterval + jitter))
         }
       } catch (e) {
-        logger.error(`[兑换插件][线程${threadIndex}]兑换异常: ${e.message}, 第${retry + 1}次`)
+        logger.error(`[兑换插件][${logTag}]兑换异常: ${e.message}, 第${retry + 1}次`)
         lastResult = {
           success: false,
           retcode: -1,
@@ -386,10 +440,12 @@ class ExchangeScheduler {
           `⏱️ 耗时：${result?.elapsed || 0}ms\n` +
           `📝 消息：${result?.message || '成功'}`
       } else {
-        // 优先显示非限流（-429/1028）、非异常的错误信息，避免风控噪音掩盖真实失败原因
-        const informativeResult = allResults.find(r =>
-          r?.retcode !== -429 && r?.retcode !== 1028 && r?.retcode !== -1 && r?.retcode !== -2
-        ) || allResults[0] || {}
+        // 错误展示优先级：终端错误（库存不足/售罄/登录失效）> 其它业务错误 > 限流/异常。
+        // 终端错误最能反映真实失败原因，避免被排在前面的限流/-2007 等瞬时噪音掩盖
+        const informativeResult = allResults.find(r => TERMINAL_ERRORS.has(r?.retcode)) ||
+          allResults.find(r =>
+            r?.retcode !== -429 && r?.retcode !== 1028 && r?.retcode !== -1 && r?.retcode !== -2
+          ) || allResults[0] || {}
 
         let errorDetail = `📝 错误：${informativeResult?.message || '未知错误'}\n` +
           `🔢 错误码：${informativeResult?.retcode || '?'}`
@@ -397,6 +453,11 @@ class ExchangeScheduler {
         // 登录失效提示（仅 -100）
         if (informativeResult?.loginExpired || informativeResult?.retcode === -100) {
           errorDetail += '\n💡 请重新登录后重试'
+        }
+
+        // -2007 未登录：同账号并发抢兑时服务端也会瞬时返回此码（并非 Cookie 真失效）
+        if (informativeResult?.retcode === -2007) {
+          errorDetail += '\n💡 多为瞬时风控或登录态过期：请检查账号登录状态；同账号多个计划同时兑换会加剧此类失败'
         }
 
         // 所有线程都限流（HTTP 429 或 1028 风控）
